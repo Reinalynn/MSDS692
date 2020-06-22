@@ -1,0 +1,3141 @@
+---
+title: "Forecasting COVID-19 Cases and Deaths Using Time Series Analysis in R"
+output: html_notebook
+---
+```{r}
+# Run in console prior to running chunks:
+getwd()
+setwd('/Users/reginaduval/Grad_Work/MSDS692_Practicum1/Project/Data')
+dist <- read.csv("County_data_distance.csv", header = TRUE, stringsAsFactors = FALSE)
+train <- read.csv("train2.csv", header = TRUE, stringsAsFactors = FALSE)
+pop <- read.csv("covid_county_population_usafacts.csv")
+total_cases <- read.csv("total_cases.csv", header = TRUE)
+total_deaths <- read.csv("total_deaths.csv", header = TRUE)
+dist2 <- read.csv("Select_county_data_distance.csv", header = TRUE)
+MN_9cum <- read.csv("MN_9_0613.csv", header = TRUE, stringsAsFactors = FALSE)
+MN_9dcum <- read.csv("MN_9d_0613.csv", header = TRUE, stringsAsFactors = FALSE)
+MN_0613 <- read.csv("covid_cases_0613.csv", header = TRUE, stringsAsFactors = FALSE)
+county_data <- read.csv("County_data_distance2.csv", header = TRUE, stringsAsFactors = FALSE)
+MN_0613d <- read.csv("covid_deaths_0613.csv", header = TRUE, stringsAsFactors = FALSE)
+US_7cum <- read.csv("covid_cases_0613 copy.csv", header = TRUE, stringsAsFactors = FALSE)
+US_7dcum <- read.csv("covid_deaths_0613 copy.csv", header = TRUE, stringsAsFactors = FALSE)
+cases0612 <- read.csv("covid_confirmed_usafacts.csv", header = TRUE, stringsAsFactors = FALSE)
+deaths0612 <- read.csv("covid_deaths_usafacts.csv", header = TRUE, stringsAsFactors = FALSE)
+
+```
+
+I. Data collection and clean up
+  A. Pull initial data from Kaggle competition
+  B. Investigate additional data points like population, distance, and meat-packing plants at county level
+  C. Combine data and put into correct format for EDA and time series analysis
+
+```{r}
+library(astsa)
+library(broom)
+library(caret)
+library(DAAG)
+library(dplyr)
+library(dynlm)
+library(forecast)
+library(fpp2)
+library(funModeling)
+library(knitr)
+library(MARSS)
+library(matrixStats)
+library(MTS)
+library(quantmod)
+library(readxl) 
+library(tidyverse)
+library(sf)
+library(tidycensus)
+library(tmap)
+library(tmaptools)
+library(tseries)
+library(urbnmapr)
+library(urca)
+library(varhandle)
+library(vars)
+
+# # Review files from Kaggle competition
+# train <- read.csv("train.csv", header = TRUE, stringsAsFactors = FALSE)
+# # break out cases and deaths
+# train_cases <- train %>% filter(Target == "ConfirmedCases")
+# train_cases$Cases <- train_cases$TargetValue
+# train_deaths <- train %>% filter(Target == "Fatalities")
+# train_deaths$Deaths <- train_deaths$TargetValue
+# # merge back to one dataset
+# train2 <- merge(train_cases[, c(2, 3, 4, 5, 7, 10)], train_deaths[, c(2, 3, 4, 5, 7, 10)])
+# # convert date column to date format (for EDA)
+# train2$Date <- as.Date(train2$Date)
+# # save train2
+# write.csv(train2, "train2.csv", row.names = FALSE)
+
+# # Create new file with extra variables (pop, dist, meat) by FIPS
+# class(data)
+# head(data)
+# head(data2)
+# tail(data3)
+# data3$concatenate <- paste0(data3$county1, data3$county2)
+# tail(data3)
+# head(data4)
+# data4 <- data4[, 1:6]
+# head(data4)
+# data4$concatenate <- data4$concatenate_BD
+# head(data4)
+# data4 <- data4[, -6]
+# head(data4)
+# dim(data4)
+# data_full <- merge(data3[, c("concatenate", "mi_to_county")], data4, by.y, all.y = all)
+# tail(data_full)
+# summary(data_full)
+# str(data_full)
+# data_full$state <- as.character(data_full$state)
+# data_full <- data_full %>% arrange(state)
+# head(data_full)
+# final_data <- data_full[, c(3, 4, 5, 6, 7, 2)]
+# head(final_data)
+# is.na(final_data)
+# # write.csv(final_data, "County_data_distance.csv", row.names = FALSE)
+
+# add pop to "County_data_distance.csv" from train2 dataset
+# combine county data with train2 dataset
+head(dist)
+dim(dist)
+train_US <- train %>% filter(Country_Region == "US") %>% filter(County != "")
+train_US$concatenate <- paste(train_US$County, train_US$Province_State, sep = "")
+head(train_US)
+dim(train_US)
+train_US <- train_US[, c(4, 8)]
+dist2 <- left_join(dist, train_US, by = "concatenate")
+dim(dist2)
+head(dist2)
+dist2 <- unique(dist2)
+dim(dist2)
+head(dist2)
+# write.csv(dist2, "Distance Data/County_data_distance2.csv", row.names = FALSE)
+```
+II. Exploratory Data Analysis
+  A. Basic EDA on county data
+  B. Select specific counties to analyze more closely
+  C. Add geographic data to map full US data and MN data
+  
+```{r}
+# load file containing county distances
+head(dist, 10)
+# add file with population
+head(pop, 10)
+# left join dist and pop
+dist1 <- left_join(dist, pop, by = "FIPS")
+# perform basic EDA
+summary(dist1)
+str(dist1)
+# add total cases/deaths by county and map
+str(total_cases)
+total_cases$countyFIPS <- total_cases$county_fips
+data <- left_join(dist1, total_cases, by = "FIPS")
+str(data)
+data <- data[, c(1, 5, 6, 7, 8, 9, 10, 11, 12, 15)]
+head(data)
+str(total_deaths)
+total_deaths <- total_deaths[, c(1, 4)]
+data <- left_join(data, total_deaths, by = "FIPS")
+str(data)
+
+# EDA on data
+summary(data)
+freq(data)
+plot_num(data)
+hist(data$mi_to_county)
+hist(data$dist_cat) # categories  = 1 (0mi), 2 (< 25), 3 (< 75), 4 (< 150), 5 (< 300), 6 (300 +)
+plot(data$total_cases, data$total_deaths)
+plot(data$total_cases, data$population)
+ggplot(data, aes(x = total_cases, y = total_deaths, color = dist_cat)) +
+  geom_point(aes(size = meat_plant))
+
+#load file with selected counties and repeat process
+head(dist2, 10)
+# perform basic EDA
+summary(dist2)
+str(dist2)
+dist2 <- dist2 %>% filter(select == "Y")
+# add total cases/deaths by county and map
+data2<- left_join(dist2, total_cases, by = "FIPS")
+str(data2)
+data2 <- data2[, c(6, 7, 8, 9, 10, 11, 12, 13, 14, 15)]
+head(data2)
+
+# EDA on data2
+summary(data2)
+str(data2)
+plot_num(data2)
+hist(data2$dist_from_maxpop)
+hist(data2$dist_cat) # categories  = 1 (0mi), 2 (< 25), 3 (< 75), 4 (< 150), 5 (< 300), 6 (300 +)
+plot(data2$cases, data2$population)
+plot(data2$deaths, data2$cases)
+ggplot(data2, aes(x = cases, y = deaths, color = dist_from_maxpop)) +
+  geom_point(aes(size = meat_plant))
+# map using urbnmapr
+# https://medium.com/@urban_institute/how-to-create-state-and-county-maps-easily-in-r-577d29300bb2
+head(states) # urbnmapr dataset
+counties <- get_urbn_map("counties", sf = TRUE)
+counties$FIPS <- as.integer(counties$county_fips)
+head(counties)
+str(counties)
+spatial_data <- merge(counties, data, by = "FIPS")
+head(spatial_data)
+spatial_data2 <- merge(counties, dist2, by = "FIPS")
+# https://mgimond.github.io/ES218/Week12a.html
+# https://mgimond.github.io/Spatial/mapping-data-in-r.html
+ggplot(spatial_data) + geom_sf(aes(fill = mi_to_county))
+ggplot(spatial_data) + geom_sf(aes(fill = dist_cat))
+ggplot(spatial_data) + geom_sf(aes(fill = -total_cases))
+ggplot(spatial_data) + geom_sf(aes(fill = -total_deaths))
+spatial_data_MN <- spatial_data %>% filter(state_abbv == "MN")
+ggplot(spatial_data_MN) + geom_sf(aes(fill = mi_to_county))
+ggplot(spatial_data_MN) + geom_sf(aes(fill = dist_cat))
+ggplot(spatial_data_MN) + geom_sf(aes(fill = -total_cases))
+ggplot(spatial_data_MN) + geom_sf(aes(fill = -total_deaths))
+
+# use tmap package
+# http://zevross.com/blog/2018/10/02/creating-beautiful-demographic-maps-in-r-with-the-tidycensus-and-tmap-packages/
+# https://cran.r-project.org/web/packages/tmap/tmap.pdf
+cuts <- c(0, 25, 75, 150, 300, 1400)
+# palette_explorer()
+# Distance maps of US counties
+tm_shape(spatial_data, projections = 2163) +
+  tm_polygons(col = "mi_to_county", breaks = cuts, palette = "-BuPu") +
+  tm_layout(title = "Distance to State Population Center",
+            title.size = 1.1,
+            title.position = c("center", "top"))
+plants <- spatial_data %>% filter(meat_plant == "1") # add counties w/meat plants
+tm_shape(spatial_data, projections = 2163) +
+  tm_polygons(col = "mi_to_county", breaks = cuts, palette = "-BuPu") +
+  tm_shape(plants, projections = 2163) +
+  tm_polygons(col = "meat_plant", palette = "Oranges") +
+  tm_layout(title = "Dist to State Pop Center, Counties with Meat Plants",
+            title.size = 1.1,
+            title.position = c("center", "top"))
+# COVID maps of US counties
+tm_shape(spatial_data, projections = 2163) +
+  tm_polygons(col = "total_cases", style = "quantile", palette = "OrRd") +
+  tm_layout(title = "Total COVID cases by County",
+            title.size = 1.1,
+            title.position = c("center", "top"))
+tm_shape(spatial_data, projections = 2163) +
+  tm_polygons(col = "total_deaths", style = "log10_pretty", palette = "OrRd") +
+  tm_layout(title = "Total COVID deaths by County",
+            title.size = 1.1,
+            title.position = c("center", "top"))
+# Distance maps of MN counties
+MNmap <- tm_shape(spatial_data_MN, projection = 2163) + 
+  tm_polygons(col = "mi_to_county", style = "quantile", palette = "-YlGnBu") + 
+  tm_legend(position = c("right", "center")) +
+  tm_layout(title = "Minnesota Counties,\nDist to Twin Cities",
+            title.size = 1.1,
+            title.position = c("center", "top"))
+MNmap
+MNmap + tm_shape(plants, projection = 2163) +
+  tm_polygons(col = "meat_plant", palette = "Oranges")
+# COVID maps of MN counties
+MNmapCOVID <- tm_shape(spatial_data_MN, projection = 2163) + 
+  tm_polygons(c("total_cases", "total_deaths"), style = c("quantile", "pretty"), 
+              palette = list("YlGnBu", "YlOrRd")) + 
+  tm_legend(position = c("right", "center")) +
+  tm_layout(title = " MN Counties, COVID Data",
+            title.size = 1.1,
+            title.position = c("center", "top"))
+MNmapCOVID
+
+```
+III. Country level time series analysis
+  A. Filter data to 6 key countries (US, China, UK, Turkey, Brazil, India) 
+  B. Work through various time series models for US
+  C. Choose best ts model (ARIMA) and tune
+  D. Replicate models for other countries
+  E. Forecast 10 days out
+```{r}
+# https://www.otexts.org/fpp2
+# DataCamp course on ARIMA with R
+# use work flow @ https://datascienceplus.com/time-series-analysis-using-arima-model-in-r/
+
+# filter to US totals only (remove state)
+train_US <- train %>% filter(Country_Region == "US") %>% filter(Province_State == "")
+head(train_US)
+tail(train_US)
+# convert dataset to time series and plot
+tsUS <- ts(train_US[, 6:7], start = c(2020, 23), frequency = 365)
+str(tsUS)
+autoplot(tsUS)
+# repeat for China
+train_China <- train %>% filter(Country_Region == "China") %>% filter(Province_State == "")
+tail(train_China)
+tsChina <- ts(train_China[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsChina)
+# repeat for Turkey
+train_Turkey <- train %>% filter(Country_Region == "Turkey")
+head(train_Turkey)
+str(train_Turkey)
+tsTurkey <- ts(train_Turkey[, 6:7], start = c(2020, 23), frequency = 365)
+str(tsTurkey)
+autoplot(tsTurkey)
+# repeat for United Kingdom
+train_UK <- train %>% filter(Country_Region == "United Kingdom") %>% filter(Province_State == "")
+tail(train_UK)
+tsUK <- ts(train_UK[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsUK)
+# repeat for India
+train_India <- train %>% filter(Country_Region == "India") %>% filter(Province_State == "")
+tail(train_India)
+tsIndia <- ts(train_India[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsIndia)
+# repeat for Brazil
+train_Brazil <- train %>% filter(Country_Region == "Brazil") %>% filter(Province_State == "")
+tail(train_Brazil)
+tsBrazil <- ts(train_Brazil[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsBrazil)
+
+# filter tsUS data
+casesUS <- tsUS[, "Cases"]
+cases_train <- casesUS %>% window(end = c(2020, 120))
+cases_test <- casesUS %>% window(end = c(2020, 130))
+deathsUS <- tsUS[, "Deaths"]
+deaths_train <- deathsUS %>% window(end = c(2020, 120))
+deaths_test <- deathsUS %>% window(end = c(2020, 130))
+# investigate autocorrelation of US data (check for trend, seaonality, cyclicity)
+gglagplot(casesUS)
+ggAcf(casesUS) # random walk with trend, need to difference data
+acf(casesUS, plot = FALSE)
+ggPacf(casesUS)
+Pacf(casesUS, plot = FALSE)
+Box.test(casesUS, lag = 7, fitdf = 0, type = "Lj") # p value is small, significant
+adf.test(casesUS) # non-stationary
+gglagplot(deathsUS)
+ggAcf(deathsUS) # same as above - need to difference data
+acf(deathsUS, plot = FALSE)
+ggPacf(deathsUS)
+Pacf(deathsUS, plot = FALSE)
+Box.test(deathsUS, lag = 7, fitdf = 0, type = "Lj") # also significant
+adf.test(deathsUS) # non-stationary
+# transformations - diff will help with trend
+diff_casesUS <- diff(casesUS) # remove trend
+adf.test(diff_casesUS) # stationary
+par(mfrow = c(2, 1))
+acf(diff_casesUS)
+pacf(diff_casesUS)
+acf(diff(diff_casesUS)) #better - do we need a double diff?
+pacf(diff(diff_casesUS)) # too much - stick with single diff
+ndiffs(casesUS) # 1 difference
+nsdiffs(casesUS) # 0 seasonal differences
+Box.test(diff_casesUS, lag = 7, fitdf = 0, type = "Lj") # significant
+diff_deathsUS <- diff(deathsUS) # remove trend
+adf.test(diff_deathsUS) # stationary
+ndiffs(deathsUS) # 1 difference
+nsdiffs(deathsUS) # 0 diff
+par(mfrow = c(1, 1))
+
+# Possible models for CASES 
+# simple exponential smoothing (SES)
+fc_ses <- ses(casesUS)
+fc_ses$model # AIC - 2170.186, BIC - 2178.232 
+fcd_ses <- ses(diff_casesUS)
+fcd_ses$model # AIC - 2148.847, BIC - 2156.865
+fcd_ses2 <- ses(diff(cases_train), h = 20)
+checkresiduals((fcd_ses2)) # does not pass Ljung Box test (residuals)
+autoplot(fcd_ses2, series = "SES on differenced data") +
+  autolayer(diff(cases_test), series = "Actual differenced data")
+# trend models
+fc_holt <- holt(casesUS) 
+fc_holt$model # AIC - 2174.142, BIC - 2187.552 
+fcd_holt <- holt(diff_casesUS)
+fcd_holt$model # differenced, AIC - 2153.450, BIC - 2166.815
+fcd_holt_damp <- holt(diff_casesUS, damped = TRUE)
+fcd_holt_damp$model # diff and damped, AIC - 2155.826, BIC - 2171.863
+fcd_holt2 <- holt(diff(cases_train), h = 20)
+checkresiduals(fcd_holt2)
+autoplot(fcd_holt2, series = "Holt's method on differenced data") +
+  autolayer(diff(cases_test), series = "Actual differenced data")
+# multiple regression models
+# ARIMA
+fit_cases <- auto.arima(casesUS)
+fit_cases # ARIMA(0, 1, 0), RANDOM WALK, AIC - 1949.81, BIC - 1952.48
+fit_cases2 <- auto.arima(casesUS, stepwise = FALSE, approximation = FALSE)
+fit_cases2 # ARIMA(3, 1, 0), AIC - 1941.16, BIC - 1951.85
+autoplot(fit_cases2)
+sarima.for(cases_train, n.ahead = 20, 3, 1, 0)
+lines(cases_test)
+checkresiduals(fit_cases2)
+# Compare accuracy of CASES models
+accuracy(fcd_ses2)
+accuracy(fcd_holt2)
+accuracy(fit_cases2) # most accurate plus best AIC/BIC
+
+# Possible models for DEATHS
+# simple exponential smoothing (SES)
+fc2_ses <- ses(deathsUS)
+fc2_ses$model # AIC - 1811.439, BIC - 1819.486
+fcd2_ses <- ses(diff_deathsUS)
+fcd2_ses$model # AIC - 1795.522, BIC - 1803.540
+fcd2_ses2 <- ses(diff(deaths_train), h = 20)
+checkresiduals(fcd2_ses2)
+autoplot(fcd2_ses2, series = "SES on differenced data") +
+  autolayer(diff(deaths_test), series = "Actual differenced data")
+# trend models
+fc2_holt <- holt(deathsUS) 
+fc2_holt$model # AIC - 1815.441, BIC - 1828.852 
+fcd2_holt <- holt(diff_deathsUS)
+fcd2_holt$model # differenced, AIC - 1799.681, BIC - 1813.045
+fcd2_holt_damp <- holt(diff_deathsUS, damped = TRUE)
+fcd2_holt_damp$model # damped, AIC - 1801.531, BIC - 1817.568
+fcd2_holt_damp2 <- holt(diff(deaths_train), damped = TRUE, h = 20)
+checkresiduals(fcd2_holt)
+autoplot(fcd2_holt, series = "Holt's method on differenced data") +
+  autolayer(diff(cases_test), series = "Actual differenced data")
+# multiple regression models
+# ARIMA
+fit_deaths <- auto.arima(deathsUS)
+fit_deaths # ARIMA(3, 1, 2), AIC - 1560.5, BIC - 1576.54
+fit_deaths2 <- auto.arima(deathsUS, stepwise = FALSE, approximation = FALSE)
+fit_deaths2 # ARIMA(3, 1, 2), same as above
+autoplot(fit_deaths2)
+sarima.for(deaths_train, n.ahead = 20, 3, 1, 0)
+lines(deaths_test)
+checkresiduals(fit_deaths2)
+# Compare accuracy of DEATHS models
+accuracy(fcd2_ses2)
+accuracy(fcd2_holt)
+accuracy(fit_deaths2) # most accurate plus best AIC/BIC
+# Tune the model
+# Regression with ARIMA errors in R
+cases_errors <- auto.arima(casesUS, xreg = deathsUS, stepwise = FALSE, approximation = FALSE)
+cases_errors # ARIMA(0, 1, 5) AIC - 1936.95, BIC - 1955.66
+checkresiduals(cases_errors)
+fc_errors <- forecast(cases_errors, xreg = rep(mean(deathsUS)), 20)
+autoplot(fc_errors)
+# compare to most accurate CASES model
+accuracy(fc_errors) # better model
+accuracy(fit_cases2)
+deaths_errors <- auto.arima(deathsUS, xreg = casesUS, stepwise = FALSE, approximation = FALSE)
+deaths_errors # ARIMA(0, 0, 5) AIC - 1585.72, BIC - 1604.49
+checkresiduals(deaths_errors)
+fc2_errors <- forecast(deaths_errors, xreg = rep(mean(casesUS), 20))
+autoplot(fc2_errors)
+# compare to most accurate DEATHS model
+accuracy(fc2_errors) 
+accuracy(fit_deaths2) # better model
+
+# Final models for US
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS, DIFFERENCED DATA SETS
+casesUS <- tsUS[, "Cases"]
+casesUS_train <- casesUS %>% window(end = c(2020, 120))
+casesUS_test <- casesUS %>% window(end = c(2020, 130))
+diff_casesUS <- diff(casesUS)
+deathsUS <- tsUS[, "Deaths"]
+deathsUS_train <- deathsUS %>% window(end = c(2020, 120))
+deathsUS_test <- deathsUS %>% window(end = c(2020, 130))
+diff_deathsUS <- diff(deathsUS)
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_casesUS <- auto.arima(casesUS, stepwise = FALSE, approximation = FALSE, trace = TRUE)
+fit_casesUS # ARIMA(3, 1, 0), AICc - 1941.55
+autoplot(fit_casesUS)
+accuracy(fit_casesUS)
+sarima.for(casesUS_train, n.ahead = 20, 3, 1, 0)
+lines(casesUS_test)
+checkresiduals(fit_casesUS) # p-value too low
+fit_casesUS2 <- arima(casesUS, order = c(6, 1, 2))
+checkresiduals(fit_casesUS2) # passes Ljung-Box test
+fit_casesUS2
+accuracy(fit_casesUS2)
+fit_deathsUS <- auto.arima(deathsUS, stepwise = FALSE, approximation = FALSE)
+fit_deathsUS # ARIMA(4, 1, 0), AICc - 1155.41
+autoplot(fit_deathsUS)
+accuracy(fit_deathsUS)
+sarima.for(deathsUS_train, n.ahead = 20, 4, 1, 0)
+lines(deathsUS_test)
+checkresiduals(fit_deathsUS) # passes
+# Use best models to forecast further ahead
+fc_10_US <- sarima.for(casesUS, n.ahead = 10, 6, 1, 2)
+fc_10_US$pred
+fcd_10_US <- sarima.for(deathsUS, n.ahead = 10, 4, 1, 0) 
+fcd_10_US$pred
+# models show cases declining while deaths are steady
+
+# Repeat for Brazil
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS, DIFFERENCED DATA SETS
+casesBrazil <- tsBrazil[, "Cases"]
+casesBrazil_train <- casesBrazil %>% window(end = c(2020, 120))
+casesBrazil_test <- casesBrazil %>% window(end = c(2020, 130))
+diff_casesBrazil <- diff(casesBrazil)
+deathsBrazil <- tsBrazil[, "Deaths"]
+deathsBrazil_train <- deathsBrazil %>% window(end = c(2020, 120))
+deathsBrazil_test <- deathsBrazil %>% window(end = c(2020, 130))
+diff_deathsBrazil <- diff(deathsBrazil)
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_casesBrazil <- auto.arima(casesBrazil, stepwise = FALSE, approximation = FALSE)
+fit_casesBrazil # ARIMA(3, 1, 2), AICc - 1680.4
+autoplot(fit_casesBrazil)
+sarima.for(casesBrazil_train, n.ahead = 20, 3, 1, 2)
+lines(casesBrazil_test)
+checkresiduals(fit_casesBrazil)
+fit_casesBrazil2 <- arima(casesBrazil, order = c(4, 2, 4))
+checkresiduals(fit_casesBrazil2) # passes the Ljung Box test
+fit_deathsBrazil <- auto.arima(deathsBrazil, stepwise = FALSE, approximation = FALSE)
+fit_deathsBrazil # ARIMA(4, 1, 0), AICc - 1155.41
+autoplot(fit_deathsBrazil)
+sarima.for(deathsBrazil_train, n.ahead = 20, 4, 1, 0)
+lines(deathsBrazil_test)
+checkresiduals(fit_deathsBrazil) # passes
+# Use best models to forecast further ahead
+fc_10_Brazil <- sarima.for(casesBrazil, n.ahead = 10, 4, 2, 4)
+fc_10_Brazil$pred
+fcd_10_Brazil <- sarima.for(deathsBrazil, n.ahead = 10, 4, 1, 0) 
+fcd_10_Brazil$pred
+# models are following upward trend but more conservatively than recent spike
+
+# Repeat for China
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS, DIFFERENCED DATA SETS
+casesChina <- tsChina[, "Cases"]
+casesChina_train <- casesChina %>% window(end = c(2020, 120))
+casesChina_test <- casesChina %>% window(end = c(2020, 130))
+diff_casesChina <- diff(casesChina)
+deathsChina <- tsChina[, "Deaths"]
+deathsChina_train <- deathsChina %>% window(end = c(2020, 120))
+deathsChina_test <- deathsChina %>% window(end = c(2020, 130))
+diff_deathsChina <- diff(deathsChina)
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_casesChina <- auto.arima(casesChina, stepwise = FALSE, approximation = FALSE)
+fit_casesChina # ARIMA(0, 1, 1), AICc - 1874.66
+autoplot(fit_casesChina)
+sarima.for(casesChina_train, n.ahead = 20, 0, 1, 1)
+lines(casesChina_test)
+checkresiduals(fit_casesChina) # passes Ljung Box test
+fit_deathsChina <- auto.arima(deathsChina, stepwise = FALSE, approximation = FALSE)
+fit_deathsChina # ARIMA(0, 0, 0) WHITE NOISE,AICc - 1361.29
+# Both models are flat (0) to match actuals
+
+# Repeat for India
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS, DIFFERENCED DATA SETS
+casesIndia <- tsIndia[, "Cases"]
+casesIndia_train <- casesIndia %>% window(end = c(2020, 120))
+casesIndia_test <- casesIndia %>% window(end = c(2020, 130))
+diff_casesIndia <- diff(casesIndia)
+deathsIndia <- tsIndia[, "Deaths"]
+deathsIndia_train <- deathsIndia %>% window(end = c(2020, 120))
+deathsIndia_test <- deathsIndia %>% window(end = c(2020, 130))
+diff_deathsIndia <- diff(deathsIndia)
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_casesIndia <- auto.arima(casesIndia, stepwise = FALSE, approximation = FALSE)
+fit_casesIndia # ARIMA(0, 1, 2), AICc - 1470.79
+autoplot(fit_casesIndia)
+sarima.for(casesIndia_train, n.ahead = 20, 0, 1, 2)
+lines(casesIndia_test)
+checkresiduals(fit_casesIndia) # passes the Ljung Box test
+fit_deathsIndia <- auto.arima(deathsIndia, stepwise = FALSE, approximation = FALSE)
+fit_deathsIndia # ARIMA(4, 1, 0), AICc - 848.95
+autoplot(fit_deathsIndia)
+sarima.for(deathsIndia_train, n.ahead = 20, 4, 1, 0)
+lines(deathsIndia_test)
+checkresiduals(fit_deathsIndia) # passes
+# Use best models to forecast further ahead
+fc_10_India <- sarima.for(casesIndia, n.ahead = 10, 0, 1, 2)
+fc_10_India$pred
+fcd_10_India <- sarima.for(deathsIndia, n.ahead = 10, 4, 1, 0) 
+fcd_10_India$pred
+# both models are ignoring the recent spike but trending up
+
+# Repeat for Turkey
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS, DIFFERENCED DATA SETS
+casesTurkey <- tsTurkey[, "Cases"]
+casesTurkey_train <- casesTurkey %>% window(end = c(2020, 120))
+casesTurkey_test <- casesTurkey %>% window(end = c(2020, 130))
+diff_casesTurkey <- diff(casesTurkey)
+deathsTurkey <- tsTurkey[, "Deaths"]
+deathsTurkey_train <- deathsTurkey %>% window(end = c(2020, 120))
+deathsTurkey_test <- deathsTurkey %>% window(end = c(2020, 130))
+diff_deathsTurkey <- diff(deathsTurkey)
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_casesTurkey <- auto.arima(casesTurkey, stepwise = FALSE, approximation = FALSE)
+fit_casesTurkey # ARIMA(1, 1, 4), AICc - 1518.22
+autoplot(fit_casesTurkey)
+sarima.for(casesTurkey_train, n.ahead = 20, 1, 1, 4)
+lines(casesTurkey_test)
+checkresiduals(fit_casesTurkey) # passes Ljung Box test
+fit_deathsTurkey <- auto.arima(deathsTurkey, stepwise = FALSE, approximation = FALSE)
+fit_deathsTurkey # ARIMA(1, 1, 1), AICc - 648.99
+autoplot(fit_deathsTurkey)
+sarima.for(deathsTurkey_train, n.ahead = 20, 1, 1, 3)
+lines(deathsTurkey_test)
+checkresiduals(fit_deathsTurkey) # passes
+# Use best models to forecast further ahead
+fc_10_Turkey <- sarima.for(casesTurkey, n.ahead = 10, 1, 1, 4)
+fc_10_Turkey$pred
+fcd_10_Turkey <- sarima.for(deathsTurkey, n.ahead = 10, 1, 1, 3) 
+fcd_10_Turkey$pred
+# models are forecasting downward trend
+
+# Repeat for UK
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS, DIFFERENCED DATA SETS
+casesUK <- tsUK[, "Cases"]
+casesUK_train <- casesUK %>% window(end = c(2020, 120))
+casesUK_test <- casesUK %>% window(end = c(2020, 130))
+diff_casesUK <- diff(casesUK)
+deathsUK <- tsUK[, "Deaths"]
+deathsUK_train <- deathsUK %>% window(end = c(2020, 120))
+deathsUK_test <- deathsUK %>% window(end = c(2020, 130))
+diff_deathsUK <- diff(deathsUK)
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_casesUK <- auto.arima(casesUK, stepwise = FALSE, approximation = FALSE)
+fit_casesUK # ARIMA(3, 1, 2), AICc - 1700.4
+autoplot(fit_casesUK)
+sarima.for(casesUK_train, n.ahead = 20, 3, 1, 2)
+lines(casesUK_test)
+checkresiduals(fit_casesUK) # passes the LJung Box test
+fit_deathsUK <- auto.arima(deathsUK, stepwise = FALSE, approximation = FALSE)
+fit_deathsUK # ARIMA(1, 1, 3), AICc - 1350.23
+autoplot(fit_deathsUK)
+sarima.for(deathsUK_train, n.ahead = 20, 1, 1, 3)
+lines(deathsUK_test)
+checkresiduals(fit_deathsUK)
+fit_deathsUK2 <- arima(deathsUK, order = c(6, 2, 9))
+checkresiduals(fit_deathsUK2) # p-value = 0.019, closest I could get to 0.05
+# Use best models to forecast further ahead
+fc_10_UK <- sarima.for(casesUK, n.ahead = 10, 3, 1, 2)
+fc_10_UK$pred
+fcd_10_UK <- sarima.for(deathsUK, n.ahead = 10, 6, 2, 9) 
+fcd_10_UK$pred
+# models appear to capture trend but not variation
+```
+IV. State level time series analysis
+  A. Filter data to 7 key states (MN, CO, MI, NE, PA, SD, TX) 
+  B. Replicate ARIMA models for each state
+  C. Forecast 10 days out
+  D. Multivariate ts analysis (VAR and MARSS) for MN
+```{r}
+# https://datascienceplus.com/time-series-analysis-using-arima-model-in-r/
+# https://www.medrxiv.org/content/10.1101/2020.04.17.20069237v1.full.pdf
+# https://subscription.packtpub.com/book/big_data_and_business_intelligence/9781783552078/1/ch01lvl1sec08/multivariate-time-series-analysis
+
+head(train)
+# filter to US states only (remove county)
+train_states <- train %>% filter(Country_Region == "US") %>% filter(County == "")
+head(train_states)
+tail(train_states)
+# filter to MN
+train_MN <- train_states %>% filter(Province_State == "Minnesota")
+head(train_MN)
+tail(train_MN)
+# convert dataset to time series and plot
+tsMN <- ts(train_MN[, 6:7], start = c(2020, 23), frequency = 365)
+str(tsMN)
+autoplot(tsMN, main = "COVID-19 Cases and Deaths - Minnesota")
+# repeat for CO
+train_CO <- train_states %>% filter(Province_State == "Colorado") %>% filter(County == "")
+tail(train_CO)
+tsCO <- ts(train_CO[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsCO, main = "COVID-19 Cases and Deaths - Colorado")
+# repeat for MI
+train_MI <- train_states %>% filter(Province_State == "Michigan") %>% filter(County == "")
+tail(train_MI)
+tsMI <- ts(train_MI[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsMI, main = "COVID-19 Cases and Deaths - Michigan")
+# repeat for NE
+train_NE <- train_states %>% filter(Province_State == "Nebraska") %>% filter(County == "")
+tail(train_NE)
+tsNE <- ts(train_NE[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsNE, main = "COVID-19 Cases and Deaths - Nebraska")
+# repeat for PA
+train_PA <- train_states %>% filter(Province_State == "Pennsylvania") %>% filter(County == "")
+tail(train_PA)
+tsPA <- ts(train_PA[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsPA, main = "COVID-19 Cases and Deaths - Pennsylvania")
+# repeat for SD
+train_SD <- train_states %>% filter(Province_State == "South Dakota") %>% filter(County == "")
+tail(train_SD)
+tsSD <- ts(train_SD[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsSD, main = "COVID-19 Cases and Deaths - South Dakota")
+# repeat for TX
+train_TX <- train_states %>% filter(Province_State == "Texas") %>% filter(County == "")
+tail(train_TX)
+tsTX <- ts(train_TX[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsTX, main = "COVID-19 Cases and Deaths - Texas")
+
+# Build models for MN
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS, DIFFERENCED DATA SETS
+casesMN <- tsMN[, "Cases"]
+casesMN_train <- casesMN %>% window(end = c(2020, 120))
+casesMN_test <- casesMN %>% window(end = c(2020, 130))
+diff_casesMN <- diff(casesMN)
+deathsMN <- tsMN[, "Deaths"]
+deathsMN_train <- deathsMN %>% window(end = c(2020, 120))
+deathsMN_test <- deathsMN %>% window(end = c(2020, 130))
+diff_deathsMN <- diff(deathsMN)
+auto.arima(tsMN, stepwise, approximation = FALSE) # ARIMA IS UNIVARIATE ONLY
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_casesMN <- auto.arima(casesMN, stepwise = FALSE, approximation = FALSE)
+fit_casesMN # ARIMA(4, 2, 1), AICc - 1105.85
+autoplot(fit_casesMN)
+sarima.for(casesMN_train, n.ahead = 20, 4, 2, 1)
+lines(casesMN_test) # ERROR
+checkresiduals(fit_casesMN) # p-value too low
+fit_casesMN2 <- arima(casesMN, order = c(6, 2, 1))
+checkresiduals(fit_casesMN2) # passes Ljung-Box test
+coeftest(fit_casesMN2)
+fit_deathsMN <- auto.arima(deathsMN, stepwise = FALSE, approximation = FALSE)
+fit_deathsMN # ARIMA(1, 1, 2), AICc - 577.18
+autoplot(fit_deathsMN)
+sarima.for(deathsMN_train, n.ahead = 20, 1, 1, 2)
+lines(deathsMN_test) # ERROR
+checkresiduals(fit_deathsMN)
+fit_deathsMN2 <- arima(deathsMN, order = c(4, 1, 2))
+checkresiduals(fit_deathsMN2) # passes Ljung-Box test
+coeftest(fit_deathsMN2)
+# Use best models to forecast further ahead
+fc_10_MN <- sarima.for(casesMN, n.ahead = 10, 6, 2, 1)
+fc_10_MN$pred
+fcd_10_MN <- sarima.for(deathsMN, n.ahead = 10, 4, 1, 2) 
+fcd_10_MN$pred
+# both models are trending up but deaths are climbing steadily while cases show variation
+
+# Investigate MN multivariate time series analysis - using cases and deaths as covariates
+# https://bookdown.org/singh_pratap_tejendra/intro_time_series_r/multivariate-ts-analysis.html
+# http://past.rinfinance.com/agenda/2013/talk/RueyTsay.pdf
+# https://subscription.packtpub.com/book/big_data_and_business_intelligence/9781783552078/1/ch01lvl1sec08/multivariate-time-series-analysis
+apply(tsMN, 2, adf.test)
+tsMN
+tsMN1 <- tsMN[1:98, ]
+tsMN2 <- tsMN[99:108, ]
+tsMN1_diff <- diffM(tsMN1)
+apply(tsMN1_diff, 2, adf.test) # now stationary (p value < 0.05)
+plot.ts(tsMN1_diff)
+class(tsMN1_diff)
+autoplot(ts(tsMN1_diff, start = c(2020, 23), frequency = 365)) +
+  ggtitle("Time Series Plot of the stationary tsMN")
+# lag order identification
+VARselect(tsMN1_diff, type = "none", lag.max = 10)
+var.MN1 <- VAR(tsMN1_diff, lag.max = 10, ic = "AIC")
+summary(var.MN1)
+par(mar = c(2.5, 2.5, 2.5, 2.5))
+plot(var.MN1)
+coef(var.MN1)
+residuals(var.MN1)
+fitted(var.MN1)
+Phi(var.MN1)
+serial.test(var.MN1)
+causality(var.MN1, cause = c("Cases"))
+causality(var.MN1, cause = c("Deaths"))
+var.pred <- predict(var.MN1, n.ahead = 10)
+plot(var.pred)
+var.irf <- irf(var.MN1)
+plot(var.irf)
+pred_casesMN <- var.pred$fcst[1]
+pred_casesMN
+x <- pred_casesMN$Cases[, 1]
+pred_deathsMN <- var.pred$fcst[2]
+pred_deathsMN
+y <- pred_deathsMN$Deaths[, 1]
+# inverting the difference (add last value from time series to x and y)
+tsMN1
+x <- cumsum(x) + 463 # last value for cases
+y <- cumsum(y) + 18 # last value for deaths
+par(mfrow = c(2, 1))
+plot.ts(x)
+plot.ts(y)
+par(mfrow = c(1, 1))
+z <- cbind(x, y)
+z
+colnames(z) <- c("Cases", "Deaths")
+z <- ts(z, start = c(2020, 121), frequency = 365)
+autoplot(z)
+autoplot(z, color = "black") +
+  autolayer(tsMN)
+tail(tsMN)
+# cointegrated VAR and VECM (Vector Error Correction Models)
+cregr <- lm(x ~ y)
+r = cregr$residuals
+adf.test(r) # if r constitutes a stationary series, 2 series are cointegrated
+checkresiduals(cregr) # higher p-value indicates stationary
+po.coint <- po.test(z, demean = TRUE, lshort = TRUE)
+po.coint # p-value higher than 0.05 means that we can't reject null hypothesis, so two series are not cointegrated
+zJoTest <- ca.jo(z, type = c("trace"), ecdet = c("none"), K = 2) # error
+zJoTest
+
+# MARSS package
+# https://cran.r-project.org/web/packages/MARSS/vignettes/UserGuide.pdf
+# Multivariate Auto-Regressive (sames as dynamic linear models (DLMs) and vector autoregressives (VAR) state-space models)
+# https://nwfsc-timeseries.github.io/atsa-labs/sec-msscov-model-diagnostics.html
+dat <- data.frame(Yr = floor(time(tsMN) + .Machine$double.eps), Day = cycle(tsMN), tsMN)
+dat
+dat <- t(dat)
+dat
+covariates = t(tsMN[, c("Cases", "Deaths")])
+# Observation-error only model
+Q <- U <- x0 <- "zero"
+B <- Z <- "identity"
+d <- covariates
+A <- "zero"
+D <- "unconstrained"
+y <- dat
+model.list <- list(B = B, U = U, Q = Q, Z = Z, A = A, D = D, d = d, x0 = x0)
+marssfit <- MARSS(y, model = model.list)
+# Process-error only model
+R <- A <- U <- "zero"
+Q <- "equalvarcov"
+C <- "unconstrained"
+model.list2 <- list(B = B, U = U, Q = Q, Z = Z, A = A, R = R, C = C, c = covariates)
+marssfit2 <- MARSS(y, model = model.list2)
+# switch to better autoregressive model (mean reverting model)
+model.list2$B <- "diagonal and unequal"
+marssfit3 <- MARSS(y, model = model.list2) # higher log-likelihood means better model
+# both process- and observation-error models
+D <- d <- A <- U <- "zero"
+Z <- "identity"
+B <- "diagonal and unequal"
+Q <- "equalvarcov"
+C <- "unconstrained"
+c <- covariates
+x0 <- "unequal"
+tinitx <- 1
+model.list4 <- list(B = B, U = U, Q = Q, Z = Z, A = A, D = D, d = d, C = C, c = c, x0 = x0, tinitx = tinitx)
+marssfit4 <- MARSS(y, model = model.list4) # log likelihood down
+# both process and obs error but covariates only affect the observation process
+C <- c <- A <- U <- "zero"
+Z <- "identity"
+B <- "diagonal and unequal"
+Q <- "equalvarcov"
+D <- "unconstrained"
+d <- covariates
+x0 <- "unequal"
+tinitx <- 1
+model.list5 <- list(B = B, U = U, Q = Q, Z = Z, A = A, D = D, d = d, C = C, c = c, x0 = x0, tinitx = tinitx)
+marssfit5 <- MARSS(y, model = model.list5) # better model than 4 but worse than 3
+# Investigate this further at county level
+
+# Repeat for CO
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS, DIFFERENCED DATA SETS
+casesCO <- tsCO[, "Cases"]
+casesCO_train <- casesCO %>% window(end = c(2020, 120))
+casesCO_test <- casesCO %>% window(end = c(2020, 130))
+diff_casesCO <- diff(casesCO)
+deathsCO <- tsCO[, "Deaths"]
+deathsCO_train <- deathsCO %>% window(end = c(2020, 120))
+deathsCO_test <- deathsCO %>% window(end = c(2020, 130))
+diff_deathsCO <- diff(deathsCO)
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_casesCO <- auto.arima(casesCO, stepwise = FALSE, approximation = FALSE)
+fit_casesCO # ARIMA(4, 1, 1), AICc - 1374.34
+autoplot(fit_casesCO)
+sarima.for(casesCO_train, n.ahead = 20, 4, 1, 1)
+lines(casesCO_test)
+checkresiduals(fit_casesCO) # passes the Ljung Box test
+fit_deathsCO <- auto.arima(deathsCO, stepwise = FALSE, approximation = FALSE)
+fit_deathsCO # ARIMA(2, 1, 2), AICc - 871.11
+autoplot(fit_deathsCO)
+sarima.for(deathsCO_train, n.ahead = 20, 2, 1, 2)
+lines(deathsCO_test)
+checkresiduals(fit_deathsCO) # p-value too low
+fit_deathsCO2 <- arima(deathsCO, order = c(10, 1, 2))
+checkresiduals(fit_deathsCO2) # passes the Ljung Box test
+# Use best models to forecast further ahead
+fc_10_CO <- sarima.for(casesCO, n.ahead = 10, 4, 1, 1)
+fc_10_CO$pred
+fcd_10_CO <- sarima.for(deathsCO, n.ahead = 10, 10, 1, 2) 
+fcd_10_CO$pred
+# cases are trending up but deaths appear to be steady
+
+# Repeat for MI
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS, DIFFERENCED DATA SETS
+casesMI <- tsMI[, "Cases"]
+casesMI_train <- casesMI %>% window(end = c(2020, 120))
+casesMI_test <- casesMI %>% window(end = c(2020, 130))
+diff_casesMI <- diff(casesMI)
+deathsMI <- tsMI[, "Deaths"]
+deathsMI_train <- deathsMI %>% window(end = c(2020, 120))
+deathsMI_test <- deathsMI %>% window(end = c(2020, 130))
+diff_deathsMI <- diff(deathsMI)
+# BEST MODELS - use auto.arima models for simplicity and Consistency
+fit_casesMI <- auto.arima(casesMI, stepwise = FALSE, approximation = FALSE)
+fit_casesMI # ARIMA(3, 1, 0), AICc - 1446.67
+autoplot(fit_casesMI)
+sarima.for(casesMI_train, n.ahead = 20, 3, 1, 0)
+lines(casesMI_test)
+checkresiduals(fit_casesMI) # passes the Ljung Box test
+fit_deathsMI <- auto.arima(deathsMI, stepwise = FALSE, approximation = FALSE)
+fit_deathsMI # ARIMA(3, 1, 2), AICc - 1030.15
+autoplot(fit_deathsMI)
+sarima.for(deathsMI_train, n.ahead = 20, 3, 1, 2)
+lines(deathsMI_test)
+checkresiduals(fit_deathsMI) # passes
+# Use best models to forecast further ahead
+fc_10_MI <- sarima.for(casesMI, n.ahead = 10, 3, 1, 0)
+fc_10_MI$pred
+fcd_10_MI <- sarima.for(deathsMI, n.ahead = 10, 3, 1, 2) 
+fcd_10_MI$pred
+# both models show a slight upward trend when the graphs appear to be trending down
+
+# Repeat for NE
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS, DIFFERENCED DATA SETS
+casesNE <- tsNE[, "Cases"]
+casesNE_train <- casesNE %>% window(end = c(2020, 120))
+casesNE_test <- casesNE %>% window(end = c(2020, 130))
+diff_casesNE <- diff(casesNE)
+deathsNE <- tsNE[, "Deaths"]
+deathsNE_train <- deathsNE %>% window(end = c(2020, 120))
+deathsNE_test <- deathsNE %>% window(end = c(2020, 130))
+diff_deathsNE <- diff(deathsNE)
+# BEST MODELS - use auto.arima models for simplicity and Consistency
+fit_casesNE <- auto.arima(casesNE, stepwise = FALSE, approximation = FALSE)
+fit_casesNE # ARIMA(5, 1, 0), AICc - 1183.13
+autoplot(fit_casesNE)
+sarima.for(casesNE_train, n.ahead = 20, 5, 1, 0)
+lines(casesNE_test)
+checkresiduals(fit_casesNE) # p-value is too low
+fit_casesNE2 <- arima(casesNE, order = c(5, 2, 4))
+checkresiduals(fit_casesNE2) # p-value = 0.011 (closest I could get to 0.05) - not a good model
+fit_deathsNE <- auto.arima(deathsNE, stepwise = FALSE, approximation = FALSE)
+fit_deathsNE # ARIMA(2, 1, 3), AICc - 441.16
+autoplot(fit_deathsNE)
+sarima.for(deathsNE_train, n.ahead = 20, 2, 1, 3)
+lines(deathsNE_test)
+checkresiduals(fit_deathsNE) # p-value too low
+fit_deathsNE2 <- arima(deathsNE, order = c(2, 2, 4))
+checkresiduals(fit_deathsNE2) # passes the Ljung Box test
+# Use best models to forecast further ahead
+fc_10_NE <- sarima.for(casesNE, n.ahead = 10, 5, 2, 4)
+fc_10_NE$pred
+fcd_10_NE <- sarima.for(deathsNE, n.ahead = 10, 2, 2, 4) 
+fcd_10_NE$pred
+# cases model looks okay but deaths model is skewed because negative deaths were reported by NE
+
+# Repeat for PA
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS, DIFFERENCED DATA SETS
+casesPA <- tsPA[, "Cases"]
+casesPA_train <- casesPA %>% window(end = c(2020, 120))
+casesPA_test <- casesPA %>% window(end = c(2020, 130))
+diff_casesPA <- diff(casesPA)
+deathsPA <- tsPA[, "Deaths"]
+deathsPA_train <- deathsPA %>% window(end = c(2020, 120))
+deathsPA_test <- deathsPA %>% window(end = c(2020, 130))
+diff_deathsPA <- diff(deathsPA)
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_casesPA <- auto.arima(casesPA, stepwise = FALSE, approximation = FALSE)
+fit_casesPA # ARIMA(0, 1, 5), AICc - 1478.93
+autoplot(fit_casesPA)
+sarima.for(casesPA_train, n.ahead = 20, 0, 1, 5)
+lines(casesPA_test)
+checkresiduals(fit_casesPA) # p-value too low
+fit_casesPA2 <- arima(casesPA, order = c(1, 1, 6))
+checkresiduals(fit_casesPA2) # passes the Ljung Box test
+fit_deathsPA <- auto.arima(deathsPA, stepwise = FALSE, approximation = FALSE)
+fit_deathsPA # ARIMA(5, 1, 0), AICc - 1117.7
+autoplot(fit_deathsPA)
+sarima.for(deathsPA_train, n.ahead = 20, 5, 1, 0)
+lines(deathsPA_test)
+checkresiduals(fit_deathsPA) # passes
+# Use best models to forecast further ahead
+fc_10_PA <- sarima.for(casesPA, n.ahead = 10, 1, 1, 6)
+fc_10_PA$pred
+fcd_10_PA <- sarima.for(deathsPA, n.ahead = 10, 5, 1, 0) 
+fcd_10_PA$pred
+# both model match prior trends although deaths is more active
+
+# Repeat for SD
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS, DIFFERENCED DATA SETS
+casesSD <- tsSD[, "Cases"]
+casesSD_train <- casesSD %>% window(end = c(2020, 120))
+casesSD_test <- casesSD %>% window(end = c(2020, 130))
+diff_casesSD <- diff(casesSD)
+deathsSD <- tsSD[, "Deaths"]
+deathsSD_train <- deathsSD %>% window(end = c(2020, 120))
+deathsSD_test <- deathsSD %>% window(end = c(2020, 130))
+diff_deathsSD <- diff(deathsSD)
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_casesSD <- auto.arima(casesSD, stepwise = FALSE, approximation = FALSE)
+fit_casesSD # ARIMA(0, 1, 3), AICc - 933.34
+autoplot(fit_casesSD)
+sarima.for(casesSD_train, n.ahead = 20, 0, 1, 3)
+lines(casesSD_test)
+checkresiduals(fit_casesSD) # doesn't pass Ljung-Box test
+fit_casesSD2 <- arima(casesSD, order = c(2, 1, 5))
+checkresiduals(fit_casesSD2) # p-value = 0.018 (closest I could get to 0.05) - not a good model
+fit_deathsSD <- auto.arima(deathsSD, stepwise = FALSE, approximation = FALSE)
+fit_deathsSD # ARIMA(4, 1, 0), AICc - 217.37
+autoplot(fit_deathsSD)
+sarima.for(deathsSD_train, n.ahead = 20, 4, 1, 0)
+lines(deathsSD_test)
+checkresiduals(fit_deathsSD) # passes Ljung-Box test
+# Use best models to forecast further ahead
+fc_10_SD <- sarima.for(casesSD, n.ahead = 10, 2, 1, 5)
+fc_10_SD$pred
+fcd_10_SD <- sarima.for(deathsSD, n.ahead = 10, 4, 1, 0) 
+fcd_10_SD$pred
+# both model match prior trends although deaths is more active
+
+# Repeat for TX
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS, DIFFERENCED DATA SETS
+casesTX <- tsTX[, "Cases"]
+casesTX_train <- casesTX %>% window(end = c(2020, 120))
+casesTX_test <- casesTX %>% window(end = c(2020, 130))
+diff_casesTX <- diff(casesTX)
+deathsTX <- tsTX[, "Deaths"]
+deathsTX_train <- deathsTX %>% window(end = c(2020, 120))
+deathsTX_test <- deathsTX %>% window(end = c(2020, 130))
+diff_deathsTX <- diff(deathsTX)
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_casesTX <- auto.arima(casesTX, stepwise = FALSE, approximation = FALSE)
+fit_casesTX # ARIMA(5, 1, 0), AICc - 1358.83
+autoplot(fit_casesTX)
+sarima.for(casesTX_train, n.ahead = 20, 5, 1, 0)
+lines(casesTX_test)
+checkresiduals(fit_casesTX) # too low
+fit_casesTX2 <- arima(casesTX, order = c(7, 1, 0))
+checkresiduals(fit_casesTX2) # passes the Ljung Box test
+fit_deathsTX <- auto.arima(deathsTX, stepwise = FALSE, approximation = FALSE)
+fit_deathsTX # ARIMA(5, 1, 0), AICc - 689.06
+autoplot(fit_deathsTX)
+sarima.for(deathsTX_train, n.ahead = 20, 5, 1, 0)
+lines(deathsTX_test)
+checkresiduals(fit_deathsTX) # passes
+# Use best models to forecast further ahead
+fc_10_TX <- sarima.for(casesTX, n.ahead = 10, 7, 1, 0)
+fc_10_TX$pred
+fcd_10_TX <- sarima.for(deathsTX, n.ahead = 10, 5, 1, 0) 
+fcd_10_TX$pred
+# both models appear very strong
+```
+V. County level time series analysis
+  A. Filter data to 34 key counties (MN - 9, CO - 8, MI - 4, NE - 4, PA - 3, SD - 2, TX - 4) 
+  B. Replicate ARIMA models for each county
+  C. Forecast 10 days out
+```{r}
+# filter to MN counties
+# Anoka
+MN_Anoka <- train %>% filter(Province_State == "Minnesota") %>% filter(County == "Anoka")
+tsAnokaMN <- ts(MN_Anoka[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsAnokaMN, main = "COVID-19 Cases and Deaths - Anoka, MN")
+# Clay
+MN_Clay <- train %>% filter(Province_State == "Minnesota") %>% filter(County == "Clay")
+tsClayMN <- ts(MN_Clay[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsClayMN, main = "COVID-19 Cases and Deaths - Clay, MN")
+# Dakota
+MN_Dakota <- train %>% filter(Province_State == "Minnesota") %>% filter(County == "Dakota")
+tsDakotaMN <- ts(MN_Dakota[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsDakotaMN, main = "COVID-19 Cases and Deaths - Dakota, MN")
+# Hennepin
+MN_Hennepin <- train %>% filter(Province_State == "Minnesota") %>% filter(County == "Hennepin")
+tsHennepinMN <- ts(MN_Hennepin[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsHennepinMN, main = "COVID-19 Cases and Deaths - Hennepin, MN")
+# Kandiyohi
+MN_Kandiyohi <- train %>% filter(Province_State == "Minnesota") %>% filter(County == "Kandiyohi")
+tsKandiyohiMN <- ts(MN_Kandiyohi[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsKandiyohiMN, main = "COVID-19 Cases and Deaths - Kandiyohi, MN")
+# Nobles
+MN_Nobles <- train %>% filter(Province_State == "Minnesota") %>% filter(County == "Nobles")
+tsNoblesMN <- ts(MN_Nobles[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsNoblesMN, main = "COVID-19 Cases and Deaths - Nobles, MN")
+# Ramsey
+MN_Ramsey <- train %>% filter(Province_State == "Minnesota") %>% filter(County == "Ramsey")
+tsRamseyMN <- ts(MN_Ramsey[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsRamseyMN, main = "COVID-19 Cases and Deaths - Ramsey, MN")
+# Stearns
+MN_Stearns <- train %>% filter(Province_State == "Minnesota") %>% filter(County == "Stearns")
+tsStearnsMN <- ts(MN_Stearns[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsStearnsMN, main = "COVID-19 Cases and Deaths - Stearns, MN")
+# Washington
+MN_Washington <- train %>% filter(Province_State == "Minnesota") %>% filter(County == "Washington")
+tsWashingtonMN <- ts(MN_Washington[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsWashingtonMN, main = "COVID-19 Cases and Deaths - Washington, MN")
+
+# filter to CO counties
+# Adams
+CO_Adams <- train %>% filter(Province_State == "Colorado") %>% filter(County == "Adams")
+tsAdamsCO <- ts(CO_Adams[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsAdamsCO, main = "COVID-19 Cases and Deaths - Adams, CO")
+# Arapahoe
+CO_Arapahoe <- train %>% filter(Province_State == "Colorado") %>% filter(County == "Arapahoe")
+tsArapahoeCO <- ts(CO_Arapahoe[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsArapahoeCO, main = "COVID-19 Cases and Deaths - Arapahoe, CO")
+# Boulder
+CO_Boulder <- train %>% filter(Province_State == "Colorado") %>% filter(County == "Boulder")
+tsBoulderCO <- ts(CO_Boulder[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsBoulderCO, main = "COVID-19 Cases and Deaths - Boulder, CO")
+# Denver
+CO_Denver <- train %>% filter(Province_State == "Colorado") %>% filter(County == "Denver")
+tsDenverCO <- ts(CO_Denver[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsDenverCO, main = "COVID-19 Cases and Deaths - Denver, CO")
+# Douglas
+CO_Douglas <- train %>% filter(Province_State == "Colorado") %>% filter(County == "Douglas")
+tsDouglasCO <- ts(CO_Douglas[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsDouglasCO, main = "COVID-19 Cases and Deaths - Douglas, CO")
+# El Paso
+CO_ElPaso <- train %>% filter(Province_State == "Colorado") %>% filter(County == "El Paso")
+tsElPasoCO <- ts(CO_ElPaso[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsElPasoCO, main = "COVID-19 Cases and Deaths - El Paso, CO")
+# Jefferson
+CO_Jefferson <- train %>% filter(Province_State == "Colorado") %>% filter(County == "Jefferson")
+tsJeffersonCO <- ts(CO_Jefferson[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsJeffersonCO, main = "COVID-19 Cases and Deaths - Jefferson, CO")
+# Weld
+CO_Weld <- train %>% filter(Province_State == "Colorado") %>% filter(County == "Weld")
+tsWeldCO <- ts(CO_Weld[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsWeldCO, main = "COVID-19 Cases and Deaths - Weld, CO")
+
+# filter to MI counties
+# Monroe
+MI_Monroe <- train %>% filter(Province_State == "Michigan") %>% filter(County == "Monroe")
+tsMonroeMI <- ts(MI_Monroe[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsMonroeMI, main = "COVID-19 Cases and Deaths - Monroe, MI")
+# Macomb
+MI_Macomb <- train %>% filter(Province_State == "Michigan") %>% filter(County == "Macomb")
+tsMacombMI <- ts(MI_Macomb[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsMacombMI, main = "COVID-19 Cases and Deaths - Macomb, MI")
+# Oakland
+MI_Oakland <- train %>% filter(Province_State == "Michigan") %>% filter(County == "Oakland")
+tsOaklandMI <- ts(MI_Oakland[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsOaklandMI, main = "COVID-19 Cases and Deaths - Oakland, MI")
+# Wayne
+MI_Wayne <- train %>% filter(Province_State == "Michigan") %>% filter(County == "Wayne")
+tsWayneMI <- ts(MI_Wayne[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsWayneMI, main = "COVID-19 Cases and Deaths - Wayne, MI")
+
+# filter to NE counties
+# Dakota
+NE_Dakota <- train %>% filter(Province_State == "Nebraska") %>% filter(County == "Dakota")
+tsDakotaNE <- ts(NE_Dakota[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsDakotaNE, main = "COVID-19 Cases and Deaths - Dakota, NE")
+# Douglas
+NE_Douglas <- train %>% filter(Province_State == "Nebraska") %>% filter(County == "Douglas")
+tsDouglasNE <- ts(NE_Douglas[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsDouglasNE, main = "COVID-19 Cases and Deaths - Douglas, NE")
+# Hall
+NE_Hall <- train %>% filter(Province_State == "Nebraska") %>% filter(County == "Hall")
+tsHallNE <- ts(NE_Hall[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsHallNE, main = "COVID-19 Cases and Deaths - Hall, NE")
+# Scotts Bluff
+NE_Scotts <- train %>% filter(Province_State == "Nebraska") %>% filter(County == "Scotts Bluff")
+tsScottsNE <- ts(NE_Scotts[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsScottsNE, main = "COVID-19 Cases and Deaths - Scotts Bluff, NE")
+
+# filter to PA counties
+# Bucks
+PA_Bucks <- train %>% filter(Province_State == "Pennsylvania") %>% filter(County == "Bucks")
+tsBucksPA <- ts(PA_Bucks[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsBucksPA, main = "COVID-19 Cases and Deaths - Bucks, PA")
+# Montgomery
+PA_Montgomery <- train %>% filter(Province_State == "Pennsylvania") %>% filter(County == "Montgomery")
+tsMontgomeryPA <- ts(PA_Montgomery[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsMontgomeryPA, main = "COVID-19 Cases and Deaths - Montgomery, PA")
+# Philadelphia
+PA_Philadelphia <- train %>% filter(Province_State == "Pennsylvania") %>% filter(County == "Philadelphia")
+tsPhiladelphiaPA <- ts(PA_Philadelphia[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsPhiladelphiaPA, main = "COVID-19 Cases and Deaths - Philadelphia, PA")
+
+# filter to SD counties
+# Brown
+SD_Brown <- train %>% filter(Province_State == "South Dakota") %>% filter(County == "Brown")
+tsBrownSD <- ts(SD_Brown[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsBrownSD, main = "COVID-19 Cases and Deaths - Brown, SD")
+# Minnehaha
+SD_Minnehaha <- train %>% filter(Province_State == "South Dakota") %>% filter(County == "Minnehaha")
+tsMinnehahaSD <- ts(SD_Minnehaha[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsMinnehahaSD, main = "COVID-19 Cases and Deaths - Minnehaha, SD")
+
+# filter to TX counties
+# Dallas
+TX_Dallas <- train %>% filter(Province_State == "Texas") %>% filter(County == "Dallas")
+tsDallasTX <- ts(TX_Dallas[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsDallasTX, main = "COVID-19 Cases and Deaths - Dallas, TX")
+# Ellis
+TX_Ellis <- train %>% filter(Province_State == "Texas") %>% filter(County == "Ellis")
+tsEllisTX <- ts(TX_Ellis[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsEllisTX, main = "COVID-19 Cases and Deaths - Ellis, TX")
+# Harris
+TX_Harris <- train %>% filter(Province_State == "Texas") %>% filter(County == "Harris")
+tsHarrisTX <- ts(TX_Harris[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsHarrisTX, main = "COVID-19 Cases and Deaths - Harris, TX")
+# Tarrant
+TX_Tarrant <- train %>% filter(Province_State == "Texas") %>% filter(County == "Tarrant")
+tsTarrantTX <- ts(TX_Tarrant[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsTarrantTX, main = "COVID-19 Cases and Deaths - Tarrant, TX")
+
+# Build models for CO Counties
+# Adams
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsAdamsCO)
+Adams_cases <- tsAdamsCO[, "Cases"]
+Adams_cases_train <- Adams_cases %>% window(end = c(2020, 120))
+Adams_cases_test <- Adams_cases %>% window(end = c(2020, 130))
+Adams_deaths <- tsAdamsCO[, "Deaths"]
+Adams_deaths_train <- Adams_deaths %>% window(end = c(2020, 120))
+Adams_deaths_test <- Adams_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Adams_cases <- auto.arima(Adams_cases, stepwise = FALSE, approximation = FALSE)
+fit_Adams_cases # ARIMA(4, 1, 1), AICc - 936.18
+autoplot(fit_Adams_cases)
+sarima.for(Adams_cases_train, n.ahead = 20, 4, 1, 1)
+lines(Adams_cases_test)
+checkresiduals(fit_Adams_cases) # passes Ljung Box test
+fit_Adams_deaths <- auto.arima(Adams_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Adams_deaths # ARIMA(2, 1, 3), AICc - 414.61
+autoplot(fit_Adams_deaths)
+sarima.for(Adams_deaths_train, n.ahead = 20, 2, 1, 3)
+lines(Adams_deaths_test)
+checkresiduals(fit_Adams_deaths) # passes
+# Use best models to forecast further ahead
+fc_10_Adams <- sarima.for(Adams_cases, n.ahead = 10, 4, 1, 1)
+fc_10_Adams$pred
+fcd_10_Adams <- sarima.for(Adams_deaths, n.ahead = 10, 2, 1, 3) 
+fcd_10_Adams$pred
+# Arapahoe
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsArapahoeCO)
+Arapahoe_cases <- tsArapahoeCO[, "Cases"]
+Arapahoe_cases_train <- Arapahoe_cases %>% window(end = c(2020, 120))
+Arapahoe_cases_test <- Arapahoe_cases %>% window(end = c(2020, 130))
+Arapahoe_deaths <- tsArapahoeCO[, "Deaths"]
+Arapahoe_deaths_train <- Arapahoe_deaths %>% window(end = c(2020, 120))
+Arapahoe_deaths_test <- Arapahoe_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Arapahoe_cases <- auto.arima(Arapahoe_cases, stepwise = FALSE, approximation = FALSE)
+fit_Arapahoe_cases # ARIMA(5, 1, 0), AICc - 991.94
+autoplot(fit_Arapahoe_cases)
+sarima.for(Arapahoe_cases_train, n.ahead = 20, 5, 1, 0)
+lines(Arapahoe_cases_test)
+checkresiduals(fit_Arapahoe_cases) # passes
+fit_Arapahoe_deaths <- auto.arima(Arapahoe_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Arapahoe_deaths # ARIMA(0, 1, 1), AICc - 554.39
+autoplot(fit_Arapahoe_deaths)
+sarima.for(Arapahoe_deaths_train, n.ahead = 20, 0, 1, 1)
+lines(Arapahoe_deaths_test)
+checkresiduals(fit_Arapahoe_deaths) # passes
+# Use best models to forecast further ahead
+fc_10_Arapahoe <- sarima.for(Arapahoe_cases, n.ahead = 10, 5, 1, 0)
+fc_10_Arapahoe$pred
+fcd_10_Arapahoe <- sarima.for(Arapahoe_deaths, n.ahead = 10, 0, 1, 1) 
+fcd_10_Arapahoe$pred
+# Boulder
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsBoulderCO)
+Boulder_cases <- tsBoulderCO[, "Cases"]
+Boulder_cases_train <- Boulder_cases %>% window(end = c(2020, 120))
+Boulder_cases_test <- Boulder_cases %>% window(end = c(2020, 130))
+Boulder_deaths <- tsBoulderCO[, "Deaths"]
+Boulder_deaths_train <- Boulder_deaths %>% window(end = c(2020, 120))
+Boulder_deaths_test <- Boulder_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Boulder_cases <- auto.arima(Boulder_cases, stepwise = FALSE, approximation = FALSE)
+fit_Boulder_cases # ARIMA(0, 1, 5), AICc - 733.9
+autoplot(fit_Boulder_cases)
+sarima.for(Boulder_cases_train, n.ahead = 20, 0, 1, 5)
+lines(Boulder_cases_test)
+checkresiduals(fit_Boulder_cases) # passes
+fit_Boulder_deaths <- auto.arima(Boulder_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Boulder_deaths # ARIMA(0, 1, 1), AICc - 299.91
+autoplot(fit_Boulder_deaths)
+sarima.for(Boulder_deaths_train, n.ahead = 20, 0, 1, 1)
+lines(Boulder_deaths_test)
+checkresiduals(fit_Boulder_deaths) # passes
+# Use best models to forecast further ahead
+fc_10_Boulder <- sarima.for(Boulder_cases, n.ahead = 10, 0, 1, 5)
+fc_10_Boulder$pred
+fcd_10_Boulder <- sarima.for(Boulder_deaths, n.ahead = 10, 0, 1, 1) 
+fcd_10_Boulder$pred
+# Denver
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsDenverCO)
+Denver_cases <- tsDenverCO[, "Cases"]
+Denver_cases_train <- Denver_cases %>% window(end = c(2020, 120))
+Denver_cases_test <- Denver_cases %>% window(end = c(2020, 130))
+Denver_deaths <- tsDenverCO[, "Deaths"]
+Denver_deaths_train <- Denver_deaths %>% window(end = c(2020, 120))
+Denver_deaths_test <- Denver_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Denver_cases <- auto.arima(Denver_cases, stepwise = FALSE, approximation = FALSE)
+fit_Denver_cases # ARIMA(4, 1, 1), AICc - 1036.68
+autoplot(fit_Denver_cases)
+sarima.for(Denver_cases_train, n.ahead = 20, 4, 1, 1)
+lines(Denver_cases_test)
+checkresiduals(fit_Denver_cases) # passes
+fit_Denver_deaths <- auto.arima(Denver_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Denver_deaths # ARIMA(1, 1, 3), AICc - 601.56
+autoplot(fit_Denver_deaths)
+sarima.for(Denver_deaths_train, n.ahead = 20, 1, 1, 3)
+lines(Denver_deaths_test)
+checkresiduals(fit_Denver_deaths) # does not pass
+fit_Denver_deaths2 <- arima(Denver_deaths, order = c(10, 1, 3))
+checkresiduals(fit_Denver_deaths2) # passes
+# Use best models to forecast further ahead
+fc_10_Denver <- sarima.for(Denver_cases, n.ahead = 10, 4, 1, 1)
+fc_10_Denver$pred
+fcd_10_Denver <- sarima.for(Denver_deaths, n.ahead = 10, 10, 1, 3) 
+fcd_10_Denver$pred
+# Douglas
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsDouglasCO)
+Douglas_cases <- tsDouglasCO[, "Cases"]
+Douglas_cases_train <- Douglas_cases %>% window(end = c(2020, 120))
+Douglas_cases_test <- Douglas_cases %>% window(end = c(2020, 130))
+Douglas_deaths <- tsDouglasCO[, "Deaths"]
+Douglas_deaths_train <- Douglas_deaths %>% window(end = c(2020, 120))
+Douglas_deaths_test <- Douglas_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Douglas_cases <- auto.arima(Douglas_cases, stepwise = FALSE, approximation = FALSE)
+fit_Douglas_cases # ARIMA(4, 1, 1), AICc - 689.07
+autoplot(fit_Douglas_cases)
+sarima.for(Douglas_cases_train, n.ahead = 20, 4, 1, 1)
+lines(Douglas_cases_test)
+checkresiduals(fit_Douglas_cases) # does not pass
+fit_Douglas_cases2 <- arima(Douglas_cases, order = c(4, 1, 6))
+checkresiduals(fit_Douglas_cases2) # passes
+fit_Douglas_deaths <- auto.arima(Douglas_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Douglas_deaths # ARIMA(2, 1, 3), AICc - 201.78
+autoplot(fit_Douglas_deaths)
+sarima.for(Douglas_deaths_train, n.ahead = 20, 2, 1, 3)
+lines(Douglas_deaths_test)
+checkresiduals(fit_Douglas_deaths) # does not pass
+fit_Douglas_deaths2 <- arima(Douglas_deaths, order = c(8, 1, 4))
+checkresiduals(fit_Douglas_deaths2) # passes
+# Use best models to forecast further ahead
+fc_10_Douglas <- sarima.for(Douglas_cases, n.ahead = 10, 4, 1, 6)
+fc_10_Douglas$pred
+fcd_10_Douglas <- sarima.for(Douglas_deaths, n.ahead = 10, 8, 1, 4) 
+fcd_10_Douglas$pred
+# El Paso
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsElPasoCO)
+ElPaso_cases <- tsElPasoCO[, "Cases"]
+ElPaso_cases_train <- ElPaso_cases %>% window(end = c(2020, 120))
+ElPaso_cases_test <- ElPaso_cases %>% window(end = c(2020, 130))
+ElPaso_deaths <- tsElPasoCO[, "Deaths"]
+ElPaso_deaths_train <- ElPaso_deaths %>% window(end = c(2020, 120))
+ElPaso_deaths_test <- ElPaso_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_ElPaso_cases <- auto.arima(ElPaso_cases, stepwise = FALSE, approximation = FALSE)
+fit_ElPaso_cases # ARIMA(0, 1, 5), AICc - 848.24
+autoplot(fit_ElPaso_cases)
+sarima.for(ElPaso_cases_train, n.ahead = 20, 0, 1, 5)
+lines(ElPaso_cases_test)
+checkresiduals(fit_ElPaso_cases) # does not pass
+fit_ElPaso_cases2 <- arima(ElPaso_cases, order = c(6, 1, 10))
+checkresiduals(fit_ElPaso_cases2) # passes
+fit_ElPaso_deaths <- auto.arima(ElPaso_deaths, stepwise = FALSE, approximation = FALSE)
+fit_ElPaso_deaths # ARIMA(0, 1, 1), AICc - 457.28
+autoplot(fit_ElPaso_deaths)
+sarima.for(ElPaso_deaths_train, n.ahead = 20, 0, 1, 1)
+lines(ElPaso_deaths_test)
+checkresiduals(fit_ElPaso_deaths) # passes
+# Use best models to forecast further ahead
+fc_10_ElPaso <- sarima.for(ElPaso_cases, n.ahead = 10, 6, 1, 10)
+fc_10_ElPaso$pred
+fcd_10_ElPaso <- sarima.for(ElPaso_deaths, n.ahead = 10, 0, 1, 1) 
+fcd_10_ElPaso$pred
+# Jefferson
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsJeffersonCO)
+Jefferson_cases <- tsJeffersonCO[, "Cases"]
+Jefferson_cases_train <- Jefferson_cases %>% window(end = c(2020, 120))
+Jefferson_cases_test <- Jefferson_cases %>% window(end = c(2020, 130))
+Jefferson_deaths <- tsJeffersonCO[, "Deaths"]
+Jefferson_deaths_train <- Jefferson_deaths %>% window(end = c(2020, 120))
+Jefferson_deaths_test <- Jefferson_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Jefferson_cases <- auto.arima(Jefferson_cases, stepwise = FALSE, approximation = FALSE)
+fit_Jefferson_cases # ARIMA(2, 1, 3), AICc - 916.82
+autoplot(fit_Jefferson_cases)
+sarima.for(Jefferson_cases_train, n.ahead = 20, 2, 1, 3)
+lines(Jefferson_cases_test)
+checkresiduals(fit_Jefferson_cases) # passes
+fit_Jefferson_deaths <- auto.arima(Jefferson_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Jefferson_deaths # ARIMA(0, 1, 1), AICc - 402.45
+autoplot(fit_Jefferson_deaths)
+sarima.for(Jefferson_deaths_train, n.ahead = 20, 0, 1, 1)
+lines(Jefferson_deaths_test)
+checkresiduals(fit_Jefferson_deaths) # passes
+# Use best models to forecast further ahead
+fc_10_Jefferson <- sarima.for(Jefferson_cases, n.ahead = 10, 2, 1, 3)
+fc_10_Jefferson$pred
+fcd_10_Jefferson <- sarima.for(Jefferson_deaths, n.ahead = 10, 0, 1, 1) 
+fcd_10_Jefferson$pred
+# Weld
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsWeldCO)
+Weld_cases <- tsWeldCO[, "Cases"]
+Weld_cases_train <- Weld_cases %>% window(end = c(2020, 120))
+Weld_cases_test <- Weld_cases %>% window(end = c(2020, 130))
+Weld_deaths <- tsWeldCO[, "Deaths"]
+Weld_deaths_train <- Weld_deaths %>% window(end = c(2020, 120))
+Weld_deaths_test <- Weld_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Weld_cases <- auto.arima(Weld_cases, stepwise = FALSE, approximation = FALSE)
+fit_Weld_cases # ARIMA(2, 1, 3), AICc - 934.35
+autoplot(fit_Weld_cases)
+sarima.for(Weld_cases_train, n.ahead = 20, 2, 1, 3)
+lines(Weld_cases_test)
+checkresiduals(fit_Weld_cases) # does not pass
+fit_Weld_cases2 <- arima(Weld_cases, order = c(2, 1, 5))
+checkresiduals(fit_Weld_cases2) # passes
+fit_Weld_deaths <- auto.arima(Weld_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Weld_deaths # ARIMA(4, 1, 1), AICc - 447.12
+autoplot(fit_Weld_deaths)
+sarima.for(Weld_deaths_train, n.ahead = 20, 4, 1, 1)
+lines(Weld_deaths_test)
+checkresiduals(fit_Weld_deaths) # passes
+# Use best models to forecast further ahead
+fc_10_Weld <- sarima.for(Weld_cases, n.ahead = 10, 2, 1, 5)
+fc_10_Weld$pred
+fcd_10_Weld <- sarima.for(Weld_deaths, n.ahead = 10, 4, 1, 1) 
+fcd_10_Weld$pred
+
+# Repeat for MI Counties
+# Monroe
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsMonroeMI)
+Monroe_cases <- tsMonroeMI[, "Cases"]
+Monroe_cases_train <- Monroe_cases %>% window(end = c(2020, 120))
+Monroe_cases_test <- Monroe_cases %>% window(end = c(2020, 130))
+Monroe_deaths <- tsMonroeMI[, "Deaths"]
+Monroe_deaths_train <- Monroe_deaths %>% window(end = c(2020, 120))
+Monroe_deaths_test <- Monroe_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Monroe_cases <- auto.arima(Monroe_cases, stepwise = FALSE, approximation = FALSE)
+fit_Monroe_cases # ARIMA(3, 1, 2), AICc - 575.13
+autoplot(fit_Monroe_cases)
+sarima.for(Monroe_cases_train, n.ahead = 20, 3, 1, 2)
+lines(Monroe_cases_test)
+checkresiduals(fit_Monroe_cases) # passes Ljung Box test
+fit_Monroe_deaths <- auto.arima(Monroe_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Monroe_deaths # ARIMA(2, 1, 1), AICc - 105.55
+autoplot(fit_Monroe_deaths)
+sarima.for(Monroe_deaths_train, n.ahead = 20, 2, 1, 1)
+lines(Monroe_deaths_test)
+checkresiduals(fit_Monroe_deaths) # passes
+# Use best models to forecast further ahead
+fc_10_Monroe <- sarima.for(Monroe_cases, n.ahead = 10, 3, 1, 2)
+fc_10_Monroe$pred
+fcd_10_Monroe <- sarima.for(Monroe_deaths, n.ahead = 10, 2, 1, 1) 
+fcd_10_Monroe$pred
+# Macomb
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsMacombMI)
+Macomb_cases <- tsMacombMI[, "Cases"]
+Macomb_cases_train <- Macomb_cases %>% window(end = c(2020, 120))
+Macomb_cases_test <- Macomb_cases %>% window(end = c(2020, 130))
+Macomb_deaths <- tsMacombMI[, "Deaths"]
+Macomb_deaths_train <- Macomb_deaths %>% window(end = c(2020, 120))
+Macomb_deaths_test <- Macomb_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Macomb_cases <- auto.arima(Macomb_cases, stepwise = FALSE, approximation = FALSE)
+fit_Macomb_cases # ARIMA(2, 1, 3), AICc - 1058.58
+autoplot(fit_Macomb_cases)
+sarima.for(Macomb_cases_train, n.ahead = 20, 2, 1, 3)
+lines(Macomb_cases_test)
+checkresiduals(fit_Macomb_cases) # does not pass
+fit_Macomb_cases2 <- arima(Macomb_cases, order = c(5, 1, 9))
+checkresiduals(fit_Macomb_cases2) # passes
+fit_Macomb_deaths <- auto.arima(Macomb_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Macomb_deaths # ARIMA(5, 1, 0), AICc - 713.8
+autoplot(fit_Macomb_deaths)
+sarima.for(Macomb_deaths_train, n.ahead = 20, 5, 1, 0)
+lines(Macomb_deaths_test)
+checkresiduals(fit_Macomb_deaths) # does not pass
+fit_Macomb_deaths2 <- arima(Macomb_deaths, order = c(5, 1, 4))
+checkresiduals(fit_Macomb_deaths2) # passes
+# Use best models to forecast further ahead
+fc_10_Macomb <- sarima.for(Macomb_cases, n.ahead = 10, 5, 1, 9)
+fc_10_Macomb$pred
+fcd_10_Macomb <- sarima.for(Macomb_deaths, n.ahead = 10, 5, 1, 4) 
+fcd_10_Macomb$pred
+# Oakland
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsOaklandMI)
+Oakland_cases <- tsOaklandMI[, "Cases"]
+Oakland_cases_train <- Oakland_cases %>% window(end = c(2020, 120))
+Oakland_cases_test <- Oakland_cases %>% window(end = c(2020, 130))
+Oakland_deaths <- tsOaklandMI[, "Deaths"]
+Oakland_deaths_train <- Oakland_deaths %>% window(end = c(2020, 120))
+Oakland_deaths_test <- Oakland_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Oakland_cases <- auto.arima(Oakland_cases, stepwise = FALSE, approximation = FALSE)
+fit_Oakland_cases # ARIMA(0, 1, 5), AICc - 1086.09
+autoplot(fit_Oakland_cases)
+sarima.for(Oakland_cases_train, n.ahead = 20, 0, 1, 5)
+lines(Oakland_cases_test)
+checkresiduals(fit_Oakland_cases) # does not pass
+fit_Oakland_cases2 <- arima(Oakland_cases, order = c(6, 1, 8))
+checkresiduals(fit_Oakland_cases2) # passes
+fit_Oakland_deaths <- auto.arima(Oakland_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Oakland_deaths # ARIMA(3, 1, 2), AICc - 704.36
+autoplot(fit_Oakland_deaths)
+sarima.for(Oakland_deaths_train, n.ahead = 20, 3, 1, 2)
+lines(Oakland_deaths_test)
+checkresiduals(fit_Oakland_deaths) # does not pass
+fit_Oakland_deaths2 <- arima(Oakland_deaths, order = c(4, 2, 3))
+checkresiduals(fit_Oakland_deaths2) # passes
+# Use best models to forecast further ahead
+fc_10_Oakland <- sarima.for(Oakland_cases, n.ahead = 10, 6, 1, 8)
+fc_10_Oakland$pred
+fcd_10_Oakland <- sarima.for(Oakland_deaths, n.ahead = 10, 4, 2, 3) 
+fcd_10_Oakland$pred
+# Wayne
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsWayneMI)
+Wayne_cases <- tsWayneMI[, "Cases"]
+Wayne_cases_train <- Wayne_cases %>% window(end = c(2020, 120))
+Wayne_cases_test <- Wayne_cases %>% window(end = c(2020, 130))
+Wayne_deaths <- tsWayneMI[, "Deaths"]
+Wayne_deaths_train <- Wayne_deaths %>% window(end = c(2020, 120))
+Wayne_deaths_test <- Wayne_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Wayne_cases <- auto.arima(Wayne_cases, stepwise = FALSE, approximation = FALSE)
+fit_Wayne_cases # ARIMA(1, 1, 2), AICc - 1344.93
+autoplot(fit_Wayne_cases)
+sarima.for(Wayne_cases_train, n.ahead = 20, 1, 1, 2)
+lines(Wayne_cases_test)
+checkresiduals(fit_Wayne_cases) # passes
+fit_Wayne_deaths <- auto.arima(Wayne_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Wayne_deaths # ARIMA(0, 1, 5), AICc - 971.62
+autoplot(fit_Wayne_deaths)
+sarima.for(Wayne_deaths_train, n.ahead = 20, 0, 1, 5)
+lines(Wayne_deaths_test)
+checkresiduals(fit_Wayne_deaths) # passes
+# Use best models to forecast further ahead
+fc_10_Wayne <- sarima.for(Wayne_cases, n.ahead = 10, 1, 1, 2)
+fc_10_Wayne$pred
+fcd_10_Wayne <- sarima.for(Wayne_deaths, n.ahead = 10, 0, 1, 5) 
+fcd_10_Wayne$pred
+
+# Repeat for MN Counties
+# Anoka
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsAnokaMN)
+Anoka_cases <- tsAnokaMN[, "Cases"]
+Anoka_cases_train <- Anoka_cases %>% window(end = c(2020, 120))
+Anoka_cases_test <- Anoka_cases %>% window(end = c(2020, 130))
+Anoka_deaths <- tsAnokaMN[, "Deaths"]
+Anoka_deaths_train <- Anoka_deaths %>% window(end = c(2020, 120))
+Anoka_deaths_test <- Anoka_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Anoka_cases <- auto.arima(Anoka_cases, stepwise = FALSE, approximation = FALSE)
+fit_Anoka_cases # ARIMA(2, 1, 3), AICc - 614.11
+autoplot(fit_Anoka_cases)
+sarima.for(Anoka_cases_train, n.ahead = 20, 2, 1, 3) # error?!?
+checkresiduals(fit_Anoka_cases) # passes Ljung Box test
+fit_Anoka_deaths <- auto.arima(Anoka_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Anoka_deaths # ARIMA(4, 1, 1), AICc - 162.94
+autoplot(fit_Anoka_deaths)
+sarima.for(Anoka_deaths_train, n.ahead = 20, 4, 1, 1) # error?!?
+checkresiduals(fit_Anoka_deaths) # passes
+# Use best models to forecast further ahead
+fc_10_Anoka <- sarima.for(Anoka_cases, n.ahead = 10, 2, 1, 3)
+fc_10_Anoka$pred
+fcd_10_Anoka <- sarima.for(Anoka_deaths, n.ahead = 10, 4, 1, 1) 
+fcd_10_Anoka$pred
+# Clay
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsClayMN)
+Clay_cases <- tsClayMN[, "Cases"]
+Clay_cases_train <- Clay_cases %>% window(end = c(2020, 120))
+Clay_cases_test <- Clay_cases %>% window(end = c(2020, 130))
+Clay_deaths <- tsClayMN[, "Deaths"]
+Clay_deaths_train <- Clay_deaths %>% window(end = c(2020, 120))
+Clay_deaths_test <- Clay_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Clay_cases <- auto.arima(Clay_cases, stepwise = FALSE, approximation = FALSE)
+fit_Clay_cases # ARIMA(3, 1, 0), AICc - 570.6
+autoplot(fit_Clay_cases)
+sarima.for(Clay_cases_train, n.ahead = 20, 3, 1, 0)
+lines(Clay_cases_test)
+checkresiduals(fit_Clay_cases) # passes
+fit_Clay_deaths <- auto.arima(Clay_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Clay_deaths # ARIMA(0, 1, 5), AICc - 117.18
+autoplot(fit_Clay_deaths)
+sarima.for(Clay_deaths_train, n.ahead = 20, 0, 1, 5)
+lines(Clay_deaths_test)
+checkresiduals(fit_Clay_deaths) # passes
+# Use best models to forecast further ahead
+fc_10_Clay <- sarima.for(Clay_cases, n.ahead = 10, 3, 1, 0)
+fc_10_Clay$pred
+fcd_10_Clay <- sarima.for(Clay_deaths, n.ahead = 10, 0, 1, 5) 
+fcd_10_Clay$pred
+# Dakota
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsDakotaMN)
+Dakota_cases <- tsDakotaMN[, "Cases"]
+Dakota_cases_train <- Dakota_cases %>% window(end = c(2020, 120))
+Dakota_cases_test <- Dakota_cases %>% window(end = c(2020, 130))
+Dakota_deaths <- tsDakotaMN[, "Deaths"]
+Dakota_deaths_train <- Dakota_deaths %>% window(end = c(2020, 120))
+Dakota_deaths_test <- Dakota_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Dakota_cases <- auto.arima(Dakota_cases, stepwise = FALSE, approximation = FALSE)
+fit_Dakota_cases # ARIMA(4, 1, 1), AICc - 602.04
+autoplot(fit_Dakota_cases)
+sarima.for(Dakota_cases_train, n.ahead = 20, 4, 1, 1)
+lines(Dakota_cases_test)
+checkresiduals(fit_Dakota_cases) # passes
+fit_Dakota_deaths <- auto.arima(Dakota_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Dakota_deaths # ARIMA(0, 1, 5), AICc - 117.18
+autoplot(fit_Dakota_deaths)
+sarima.for(Dakota_deaths_train, n.ahead = 20, 0, 1, 5)
+lines(Dakota_deaths_test)
+checkresiduals(fit_Dakota_deaths) # passes
+# Use best models to forecast further ahead
+fc_10_Dakota <- sarima.for(Dakota_cases, n.ahead = 10, 4, 1, 1)
+fc_10_Dakota$pred
+fcd_10_Dakota <- sarima.for(Dakota_deaths, n.ahead = 10, 0, 1, 5) 
+fcd_10_Dakota$pred
+# Hennepin
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsHennepinMN)
+Hennepin_cases <- tsHennepinMN[, "Cases"]
+Hennepin_cases_train <- Hennepin_cases %>% window(end = c(2020, 120))
+Hennepin_cases_test <- Hennepin_cases %>% window(end = c(2020, 130))
+Hennepin_deaths <- tsHennepinMN[, "Deaths"]
+Hennepin_deaths_train <- Hennepin_deaths %>% window(end = c(2020, 120))
+Hennepin_deaths_test <- Hennepin_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Hennepin_cases <- auto.arima(Hennepin_cases, stepwise = FALSE, approximation = FALSE)
+fit_Hennepin_cases # ARIMA(0, 1, 5), AICc - 965.59
+autoplot(fit_Hennepin_cases)
+sarima.for(Hennepin_cases_train, n.ahead = 20, 0, 1, 5)
+lines(Hennepin_cases_test)
+checkresiduals(fit_Hennepin_cases) # passes
+fit_Hennepin_deaths <- auto.arima(Hennepin_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Hennepin_deaths # ARIMA(4, 1, 1), AICc - 527.24
+autoplot(fit_Hennepin_deaths)
+sarima.for(Hennepin_deaths_train, n.ahead = 20, 4, 1, 1)
+lines(Hennepin_deaths_test)
+checkresiduals(fit_Hennepin_deaths) # passes
+# Use best models to forecast further ahead
+fc_10_Hennepin <- sarima.for(Hennepin_cases, n.ahead = 10, 0, 1, 5)
+fc_10_Hennepin$pred
+fcd_10_Hennepin <- sarima.for(Hennepin_deaths, n.ahead = 10, 4, 1, 1) 
+fcd_10_Hennepin$pred
+# Kandiyohi
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsKandiyohiMN)
+Kandiyohi_cases <- tsKandiyohiMN[, "Cases"]
+Kandiyohi_cases_train <- Kandiyohi_cases %>% window(end = c(2020, 120))
+Kandiyohi_cases_test <- Kandiyohi_cases %>% window(end = c(2020, 130))
+Kandiyohi_deaths <- tsKandiyohiMN[, "Deaths"]
+Kandiyohi_deaths_train <- Kandiyohi_deaths %>% window(end = c(2020, 120))
+Kandiyohi_deaths_test <- Kandiyohi_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Kandiyohi_cases <- auto.arima(Kandiyohi_cases, stepwise = FALSE, approximation = FALSE)
+fit_Kandiyohi_cases # ARIMA(4, 1, 0), AICc - 609
+autoplot(fit_Kandiyohi_cases)
+sarima.for(Kandiyohi_cases_train, n.ahead = 20, 4, 1, 0)
+lines(Kandiyohi_cases_test)
+checkresiduals(fit_Kandiyohi_cases) # passes
+fit_Kandiyohi_deaths <- auto.arima(Kandiyohi_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Kandiyohi_deaths # ARIMA(0, 0, 0), AICc - 197.14 White Noise Model
+autoplot(fit_Kandiyohi_deaths)
+sarima.for(Kandiyohi_deaths_train, n.ahead = 20, 0, 0, 0)
+lines(Kandiyohi_deaths_test)
+checkresiduals(fit_Kandiyohi_deaths) # passes
+# Use best models to forecast further ahead
+fc_10_Kandiyohi <- sarima.for(Kandiyohi_cases, n.ahead = 10, 4, 1, 0)
+fc_10_Kandiyohi$pred
+fcd_10_Kandiyohi <- sarima.for(Kandiyohi_deaths, n.ahead = 10, 0, 0, 0) 
+fcd_10_Kandiyohi$pred
+# Nobles
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsNoblesMN)
+Nobles_cases <- tsNoblesMN[, "Cases"]
+Nobles_cases_train <- Nobles_cases %>% window(end = c(2020, 120))
+Nobles_cases_test <- Nobles_cases %>% window(end = c(2020, 130))
+Nobles_deaths <- tsNoblesMN[, "Deaths"]
+Nobles_deaths_train <- Nobles_deaths %>% window(end = c(2020, 120))
+Nobles_deaths_test <- Nobles_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Nobles_cases <- auto.arima(Nobles_cases, stepwise = FALSE, approximation = FALSE)
+fit_Nobles_cases # ARIMA(1, 1, 3), AICc - 864.04
+autoplot(fit_Nobles_cases)
+sarima.for(Nobles_cases_train, n.ahead = 20, 1, 1, 3); lines(Nobles_cases_test)
+checkresiduals(fit_Nobles_cases) # passes
+fit_Nobles_deaths <- auto.arima(Nobles_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Nobles_deaths # ARIMA(0, 0, 0), AICc - 122.28 White Noise Model
+autoplot(fit_Nobles_deaths)
+sarima.for(Nobles_deaths_train, n.ahead = 20, 0, 0, 0)
+lines(Nobles_deaths_test)
+checkresiduals(fit_Nobles_deaths) # passes
+# Use best models to forecast further ahead
+fc_10_Nobles <- sarima.for(Nobles_cases, n.ahead = 10, 1, 1, 3)
+fc_10_Nobles$pred
+fcd_10_Nobles <- sarima.for(Nobles_deaths, n.ahead = 10, 0, 0, 0) 
+fcd_10_Nobles$pred
+# Ramsey
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsRamseyMN)
+Ramsey_cases <- tsRamseyMN[, "Cases"]
+Ramsey_cases_train <- Ramsey_cases %>% window(end = c(2020, 120))
+Ramsey_cases_test <- Ramsey_cases %>% window(end = c(2020, 130))
+Ramsey_deaths <- tsRamseyMN[, "Deaths"]
+Ramsey_deaths_train <- Ramsey_deaths %>% window(end = c(2020, 120))
+Ramsey_deaths_test <- Ramsey_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Ramsey_cases <- auto.arima(Ramsey_cases, stepwise = FALSE, approximation = FALSE)
+fit_Ramsey_cases # ARIMA(5, 1, 0), AICc - 647.71
+autoplot(fit_Ramsey_cases)
+sarima.for(Ramsey_cases_train, n.ahead = 20, 5, 1, 0)
+lines(Ramsey_cases_test)
+checkresiduals(fit_Ramsey_cases) # does not pass
+fit_Ramsey_cases2 <- arima(Ramsey_cases, order = c(6, 3, 5))
+checkresiduals(fit_Ramsey_cases2) # passes
+fit_Ramsey_deaths <- auto.arima(Ramsey_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Ramsey_deaths # ARIMA(0, 1, 1), AICc - 224.01 White Noise Model
+autoplot(fit_Ramsey_deaths)
+sarima.for(Ramsey_deaths_train, n.ahead = 20, 0, 1, 1)
+lines(Ramsey_deaths_test)
+checkresiduals(fit_Ramsey_deaths) # does not pass
+fit_Ramsey_deaths2 <- arima(Ramsey_deaths, order = c(1, 1, 2))
+checkresiduals(fit_Ramsey_deaths2) # passes
+# Use best models to forecast further ahead
+fc_10_Ramsey <- sarima.for(Ramsey_cases, n.ahead = 10, 6, 3, 5)
+fc_10_Ramsey$pred
+fcd_10_Ramsey <- sarima.for(Ramsey_deaths, n.ahead = 10, 1, 1, 2) 
+fcd_10_Ramsey$pred
+# Stearns
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsStearnsMN)
+Stearns_cases <- tsStearnsMN[, "Cases"]
+Stearns_cases_train <- Stearns_cases %>% window(end = c(2020, 120))
+Stearns_cases_test <- Stearns_cases %>% window(end = c(2020, 130))
+Stearns_deaths <- tsStearnsMN[, "Deaths"]
+Stearns_deaths_train <- Stearns_deaths %>% window(end = c(2020, 120))
+Stearns_deaths_test <- Stearns_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Stearns_cases <- auto.arima(Stearns_cases, stepwise = FALSE, approximation = FALSE)
+fit_Stearns_cases # ARIMA(0, 1, 4), AICc - 887.11
+autoplot(fit_Stearns_cases)
+sarima.for(Stearns_cases_train, n.ahead = 20, 0, 1, 4)
+lines(Stearns_cases_test)
+checkresiduals(fit_Stearns_cases) # passes
+fit_Stearns_deaths <- auto.arima(Stearns_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Stearns_deaths # ARIMA(2, 1, 0), AICc - 35.04
+autoplot(fit_Stearns_deaths)
+sarima.for(Stearns_deaths_train, n.ahead = 20, 2, 1, 0)
+lines(Stearns_deaths_test)
+checkresiduals(fit_Stearns_deaths) # passes
+# Use best models to forecast further ahead
+fc_10_Stearns <- sarima.for(Stearns_cases, n.ahead = 10, 0, 1, 4)
+fc_10_Stearns$pred
+fcd_10_Stearns <- sarima.for(Stearns_deaths, n.ahead = 10, 2, 1, 0) 
+fcd_10_Stearns$pred
+# Washington
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsWashingtonMN)
+Washington_cases <- tsWashingtonMN[, "Cases"]
+Washington_cases_train <- Washington_cases %>% window(end = c(2020, 120))
+Washington_cases_test <- Washington_cases %>% window(end = c(2020, 130))
+Washington_deaths <- tsWashingtonMN[, "Deaths"]
+Washington_deaths_train <- Washington_deaths %>% window(end = c(2020, 120))
+Washington_deaths_test <- Washington_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Washington_cases <- auto.arima(Washington_cases, stepwise = FALSE, approximation = FALSE)
+fit_Washington_cases # ARIMA(1, 1, 2), AICc - 465.94
+autoplot(fit_Washington_cases)
+sarima.for(Washington_cases_train, n.ahead = 20, 0, 1, 4)
+lines(Washington_cases_test)
+checkresiduals(fit_Washington_cases) # passes
+fit_Washington_deaths <- auto.arima(Washington_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Washington_deaths # ARIMA(2, 1, 3), AICc - 84.25
+autoplot(fit_Washington_deaths)
+sarima.for(Washington_deaths_train, n.ahead = 20, 2, 1, 3)
+lines(Washington_deaths_test)
+checkresiduals(fit_Washington_deaths) # does not pass
+fit_Washington_deaths2 <- arima(Washington_deaths, order = c(3, 1, 8))
+checkresiduals(fit_Washington_deaths2) # p-value of 0.02847, closest I could get to 0.05
+# Use best models to forecast further ahead
+fc_10_Washington <- sarima.for(Washington_cases, n.ahead = 10, 0, 1, 4)
+fc_10_Washington$pred
+fcd_10_Washington <- sarima.for(Washington_deaths, n.ahead = 10, 3, 1, 8) 
+fcd_10_Washington$pred
+
+# Repeat for NE Counties
+# Dakota
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsDakotaNE)
+Dakota_cases <- tsDakotaNE[, "Cases"]
+Dakota_cases_train <- Dakota_cases %>% window(end = c(2020, 120))
+Dakota_cases_test <- Dakota_cases %>% window(end = c(2020, 130))
+Dakota_deaths <- tsDakotaNE[, "Deaths"]
+Dakota_deaths_train <- Dakota_deaths %>% window(end = c(2020, 120))
+Dakota_deaths_test <- Dakota_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Dakota_cases <- auto.arima(Dakota_cases, stepwise = FALSE, approximation = FALSE)
+fit_Dakota_cases # ARIMA(0, 1, 5), AICc - 1102.55
+autoplot(fit_Dakota_cases)
+sarima.for(Dakota_cases_train, n.ahead = 20, 0, 1, 5); lines(Dakota_cases_test)
+checkresiduals(fit_Dakota_cases) # passes Ljung Box test
+fit_Dakota_deaths <- auto.arima(Dakota_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Dakota_deaths # ARIMA(3, 1, 2), AICc - 45.75
+autoplot(fit_Dakota_deaths)
+sarima.for(Dakota_deaths_train, n.ahead = 20, 3, 1, 2)
+lines(Dakota_deaths_test)
+checkresiduals(fit_Dakota_deaths) # passes
+# Use best models to forecast further ahead
+fc_10_Dakota <- sarima.for(Dakota_cases, n.ahead = 10, 0, 1, 5)
+fc_10_Dakota$pred
+fcd_10_Dakota <- sarima.for(Dakota_deaths, n.ahead = 10, 3, 1, 2) 
+fcd_10_Dakota$pred
+# Douglas
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsDouglasNE)
+Douglas_cases <- tsDouglasNE[, "Cases"]
+Douglas_cases_train <- Douglas_cases %>% window(end = c(2020, 120))
+Douglas_cases_test <- Douglas_cases %>% window(end = c(2020, 130))
+Douglas_deaths <- tsDouglasNE[, "Deaths"]
+Douglas_deaths_train <- Douglas_deaths %>% window(end = c(2020, 120))
+Douglas_deaths_test <- Douglas_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Douglas_cases <- auto.arima(Douglas_cases, stepwise = FALSE, approximation = FALSE)
+fit_Douglas_cases # ARIMA(1, 2, 4), AICc - 832.97
+autoplot(fit_Douglas_cases)
+sarima.for(Douglas_cases_train, n.ahead = 20, 1, 2, 4)
+lines(Douglas_cases_test)
+checkresiduals(fit_Douglas_cases) # passes
+fit_Douglas_deaths <- auto.arima(Douglas_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Douglas_deaths # ARIMA(0, 1, 1), AICc - 187.38
+autoplot(fit_Douglas_deaths)
+sarima.for(Douglas_deaths_train, n.ahead = 20, 0, 1, 1)
+lines(Douglas_deaths_test)
+checkresiduals(fit_Douglas_deaths) # does not pass
+fit_Douglas_deaths2 <- arima(Douglas_deaths, order = c(10, 2, 10))
+checkresiduals(fit_Douglas_deaths2) # p-value = 0.4827, closest I could get to 0.05
+# Use best models to forecast further ahead
+fc_10_Douglas <- sarima.for(Douglas_cases, n.ahead = 10, 1, 2, 5)
+fc_10_Douglas$pred
+fcd_10_Douglas <- sarima.for(Douglas_deaths, n.ahead = 10, 10, 2, 10) 
+fcd_10_Douglas$pred
+# Hall
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsHallNE)
+Hall_cases <- tsHallNE[, "Cases"]
+Hall_cases_train <- Hall_cases %>% window(end = c(2020, 120))
+Hall_cases_test <- Hall_cases %>% window(end = c(2020, 130))
+Hall_deaths <- tsHallNE[, "Deaths"]
+Hall_deaths_train <- Hall_deaths %>% window(end = c(2020, 120))
+Hall_deaths_test <- Hall_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Hall_cases <- auto.arima(Hall_cases, stepwise = FALSE, approximation = FALSE)
+fit_Hall_cases # ARIMA(5, 1, 0), AICc - 933.76
+autoplot(fit_Hall_cases)
+sarima.for(Hall_cases_train, n.ahead = 20, 5, 1, 0)
+lines(Hall_cases_test)
+checkresiduals(fit_Hall_cases) # passes
+fit_Hall_deaths <- auto.arima(Hall_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Hall_deaths # ARIMA(0, 1, 1), AICc - 427.91
+autoplot(fit_Hall_deaths)
+sarima.for(Hall_deaths_train, n.ahead = 20, 0, 1, 1)
+lines(Hall_deaths_test)
+checkresiduals(fit_Hall_deaths) # passes
+# Use best models to forecast further ahead
+fc_10_Hall <- sarima.for(Hall_cases, n.ahead = 10, 5, 1, 0)
+fc_10_Hall$pred
+fcd_10_Hall <- sarima.for(Hall_deaths, n.ahead = 10, 0, 1, 1) 
+fcd_10_Hall$pred
+# Scotts Bluff
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsScottsNE)
+Scotts_cases <- tsScottsNE[, "Cases"]
+Scotts_cases_train <- Scotts_cases %>% window(end = c(2020, 120))
+Scotts_cases_test <- Scotts_cases %>% window(end = c(2020, 130))
+Scotts_deaths <- tsScottsNE[, "Deaths"]
+Scotts_deaths_train <- Scotts_deaths %>% window(end = c(2020, 120))
+Scotts_deaths_test <- Scotts_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Scotts_cases <- auto.arima(Scotts_cases, stepwise = FALSE, approximation = FALSE)
+fit_Scotts_cases # ARIMA(1, 1, 2), AICc - 268.7
+autoplot(fit_Scotts_cases)
+sarima.for(Scotts_cases_train, n.ahead = 20, 1, 1, 2)
+lines(Scotts_cases_test)
+checkresiduals(fit_Scotts_cases) # passes
+fit_Scotts_deaths <- auto.arima(Scotts_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Scotts_deaths # ARIMA(0, 0, 0), AICc - Inf (no deaths recorded)
+autoplot(fit_Scotts_deaths)
+sarima.for(Scotts_deaths_train, n.ahead = 20, 0, 0, 0)
+lines(Scotts_deaths_test)
+checkresiduals(fit_Scotts_deaths) # passes
+# Use best models to forecast further ahead
+fc_10_Scotts <- sarima.for(Scotts_cases, n.ahead = 10, 1, 1, 2)
+fc_10_Scotts$pred
+
+# Repeat for PA Counties
+# Bucks
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsBucksPA)
+Bucks_cases <- tsBucksPA[, "Cases"]
+Bucks_cases_train <- Bucks_cases %>% window(end = c(2020, 120))
+Bucks_cases_test <- Bucks_cases %>% window(end = c(2020, 130))
+Bucks_deaths <- tsBucksPA[, "Deaths"]
+Bucks_deaths_train <- Bucks_deaths %>% window(end = c(2020, 120))
+Bucks_deaths_test <- Bucks_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Bucks_cases <- auto.arima(Bucks_cases, stepwise = FALSE, approximation = FALSE)
+fit_Bucks_cases # ARIMA(2, 1, 2), AICc - 1021.76
+autoplot(fit_Bucks_cases)
+sarima.for(Bucks_cases_train, n.ahead = 20, 2, 1, 2)
+lines(Bucks_cases_test)
+checkresiduals(fit_Bucks_cases) # passes Ljung Box test
+fit_Bucks_deaths <- auto.arima(Bucks_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Bucks_deaths # ARIMA(4, 1, 1), AICc - 635.77
+autoplot(fit_Bucks_deaths)
+sarima.for(Bucks_deaths_train, n.ahead = 20, 4, 1, 1)
+lines(Bucks_deaths_test)
+checkresiduals(fit_Bucks_deaths) # does not pass
+fit_Bucks_deaths2 <- arima(Bucks_deaths, order = c(1, 2, 9))
+checkresiduals(fit_Bucks_deaths2) # passes
+# Use best models to forecast further ahead
+fc_10_Bucks <- sarima.for(Bucks_cases, n.ahead = 10, 2, 1, 2)
+fc_10_Bucks$pred
+fcd_10_Bucks <- sarima.for(Bucks_deaths, n.ahead = 10, 1, 2, 9) 
+fcd_10_Bucks$pred
+# Montgomery
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsMontgomeryPA)
+Montgomery_cases <- tsMontgomeryPA[, "Cases"]
+Montgomery_cases_train <- Montgomery_cases %>% window(end = c(2020, 120))
+Montgomery_cases_test <- Montgomery_cases %>% window(end = c(2020, 130))
+Montgomery_deaths <- tsMontgomeryPA[, "Deaths"]
+Montgomery_deaths_train <- Montgomery_deaths %>% window(end = c(2020, 120))
+Montgomery_deaths_test <- Montgomery_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Montgomery_cases <- auto.arima(Montgomery_cases, stepwise = FALSE, approximation = FALSE)
+fit_Montgomery_cases # ARIMA(1, 1, 0), AICc - 987.53
+autoplot(fit_Montgomery_cases)
+sarima.for(Montgomery_cases_train, n.ahead = 20, 1, 1, 0)
+lines(Montgomery_cases_test)
+checkresiduals(fit_Montgomery_cases) # passes
+fit_Montgomery_deaths <- auto.arima(Montgomery_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Montgomery_deaths # ARIMA(5, 1, 0), AICc - 800.29
+autoplot(fit_Montgomery_deaths)
+sarima.for(Montgomery_deaths_train, n.ahead = 20, 5, 1, 0)
+lines(Montgomery_deaths_test)
+checkresiduals(fit_Montgomery_deaths) # passes
+# Use best models to forecast further ahead
+fc_10_Montgomery <- sarima.for(Montgomery_cases, n.ahead = 10, 1, 1, 0)
+fc_10_Montgomery$pred
+fcd_10_Montgomery <- sarima.for(Montgomery_deaths, n.ahead = 10, 5, 1, 0) 
+fcd_10_Montgomery$pred
+# Philadelphia
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsPhiladelphiaPA)
+Philadelphia_cases <- tsPhiladelphiaPA[, "Cases"]
+Philadelphia_cases_train <- Philadelphia_cases %>% window(end = c(2020, 120))
+Philadelphia_cases_test <- Philadelphia_cases %>% window(end = c(2020, 130))
+Philadelphia_deaths <- tsPhiladelphiaPA[, "Deaths"]
+Philadelphia_deaths_train <- Philadelphia_deaths %>% window(end = c(2020, 120))
+Philadelphia_deaths_test <- Philadelphia_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Philadelphia_cases <- auto.arima(Philadelphia_cases, stepwise = FALSE, approximation = FALSE)
+fit_Philadelphia_cases # ARIMA(0, 1, 3), AICc - 1377.94
+autoplot(fit_Philadelphia_cases)
+sarima.for(Philadelphia_cases_train, n.ahead = 20, 0, 1, 3)
+lines(Philadelphia_cases_test)
+checkresiduals(fit_Philadelphia_cases) # passes
+fit_Philadelphia_deaths <- auto.arima(Philadelphia_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Philadelphia_deaths # ARIMA(0, 1, 2), AICc - 849.76
+autoplot(fit_Philadelphia_deaths)
+sarima.for(Philadelphia_deaths_train, n.ahead = 20, 0, 1, 2)
+lines(Philadelphia_deaths_test)
+checkresiduals(fit_Philadelphia_deaths) # passes
+# Use best models to forecast further ahead
+fc_10_Philadelphia <- sarima.for(Philadelphia_cases, n.ahead = 10, 0, 1, 3)
+fc_10_Philadelphia$pred
+fcd_10_Philadelphia <- sarima.for(Philadelphia_deaths, n.ahead = 10, 0, 1, 2) 
+fcd_10_Philadelphia$pred
+
+# Repeat for SD Counties
+# Brown
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsBrownSD)
+Brown_cases <- tsBrownSD[, "Cases"]
+Brown_cases_train <- Brown_cases %>% window(end = c(2020, 120))
+Brown_cases_test <- Brown_cases %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Brown_cases <- auto.arima(Brown_cases, stepwise = FALSE, approximation = FALSE)
+fit_Brown_cases # ARIMA(5, 1, 0), AICc - 427.12
+autoplot(fit_Brown_cases)
+sarima.for(Brown_cases_train, n.ahead = 20, 5, 1, 0)
+lines(Brown_cases_test)
+checkresiduals(fit_Brown_cases) # passes Ljung Box test
+# Use best models to forecast further ahead
+fc_10_Brown <- sarima.for(Brown_cases, n.ahead = 10, 2, 1, 2)
+fc_10_Brown$pred
+# Minnehaha
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsMinnehahaSD)
+Minnehaha_cases <- tsMinnehahaSD[, "Cases"]
+Minnehaha_cases_train <- Minnehaha_cases %>% window(end = c(2020, 120))
+Minnehaha_cases_test <- Minnehaha_cases %>% window(end = c(2020, 130))
+Minnehaha_deaths <- tsMinnehahaSD[, "Deaths"]
+Minnehaha_deaths_train <- Minnehaha_deaths %>% window(end = c(2020, 120))
+Minnehaha_deaths_test <- Minnehaha_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Minnehaha_cases <- auto.arima(Minnehaha_cases, stepwise = FALSE, approximation = FALSE)
+fit_Minnehaha_cases # ARIMA(3, 1, 0), AICc - 921.22
+autoplot(fit_Minnehaha_cases)
+sarima.for(Minnehaha_cases_train, n.ahead = 20, 3, 1, 0)
+lines(Minnehaha_cases_test)
+checkresiduals(fit_Minnehaha_cases) # does not pass
+fit_Minnehaha_cases2 <- arima(Minnehaha_cases, order = c(6, 1, 2))
+checkresiduals(fit_Minnehaha_cases2) # passes
+fit_Minnehaha_deaths <- auto.arima(Minnehaha_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Minnehaha_deaths # ARIMA(1, 1, 4), AICc - 300.79
+autoplot(fit_Minnehaha_deaths)
+sarima.for(Minnehaha_deaths_train, n.ahead = 20, 1, 1, 4)
+lines(Minnehaha_deaths_test)
+checkresiduals(fit_Minnehaha_deaths) # passes
+# Use best models to forecast further ahead
+fc_10_Minnehaha <- sarima.for(Minnehaha_cases, n.ahead = 10, 6, 1, 2)
+fc_10_Minnehaha$pred
+fcd_10_Minnehaha <- sarima.for(Minnehaha_deaths, n.ahead = 10, 1, 1, 4) 
+fcd_10_Minnehaha$pred
+
+# Repeat for TX Counties
+# Dallas
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsDallasTX)
+Dallas_cases <- tsDallasTX[, "Cases"]
+Dallas_cases_train <- Dallas_cases %>% window(end = c(2020, 120))
+Dallas_cases_test <- Dallas_cases %>% window(end = c(2020, 130))
+Dallas_deaths <- tsDallasTX[, "Deaths"]
+Dallas_deaths_train <- Dallas_deaths %>% window(end = c(2020, 120))
+Dallas_deaths_test <- Dallas_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Dallas_cases <- auto.arima(Dallas_cases, stepwise = FALSE, approximation = FALSE)
+fit_Dallas_cases # ARIMA(2, 1, 0), AICc - 1073.6
+autoplot(fit_Dallas_cases)
+sarima.for(Dallas_cases_train, n.ahead = 20, 2, 1, 0)
+lines(Dallas_cases_test)
+checkresiduals(fit_Dallas_cases) # passes Ljung Box test
+fit_Dallas_deaths <- auto.arima(Dallas_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Dallas_deaths # ARIMA(2, 1, 3), AICc - 453
+autoplot(fit_Dallas_deaths)
+sarima.for(Dallas_deaths_train, n.ahead = 20, 2, 1, 3)
+lines(Dallas_deaths_test)
+checkresiduals(fit_Dallas_deaths) # passes
+# Use best models to forecast further ahead
+fc_10_Dallas <- sarima.for(Dallas_cases, n.ahead = 10, 2, 1, 0)
+fc_10_Dallas$pred
+fcd_10_Dallas <- sarima.for(Dallas_deaths, n.ahead = 10, 2, 1, 3)
+fcd_10_Dallas$pred
+# Ellis
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsEllisTX)
+Ellis_cases <- tsEllisTX[, "Cases"]
+Ellis_cases_train <- Ellis_cases %>% window(end = c(2020, 120))
+Ellis_cases_test <- Ellis_cases %>% window(end = c(2020, 130))
+Ellis_deaths <- tsEllisTX[, "Deaths"]
+Ellis_deaths_train <- Ellis_deaths %>% window(end = c(2020, 120))
+Ellis_deaths_test <- Ellis_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Ellis_cases <- auto.arima(Ellis_cases, stepwise = FALSE, approximation = FALSE)
+fit_Ellis_cases # ARIMA(0, 1, 5), AICc - 509.19
+autoplot(fit_Ellis_cases)
+sarima.for(Ellis_cases_train, n.ahead = 20, 0, 1, 5)
+lines(Ellis_cases_test)
+checkresiduals(fit_Ellis_cases) # passes
+fit_Ellis_deaths <- auto.arima(Ellis_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Ellis_deaths # ARIMA(1, 1, 4), AICc - 94.5
+autoplot(fit_Ellis_deaths)
+sarima.for(Ellis_deaths_train, n.ahead = 20, 1, 1, 4)
+lines(Ellis_deaths_test)
+checkresiduals(fit_Ellis_deaths) # passes
+# Use best models to forecast further ahead
+fc_10_Ellis <- sarima.for(Ellis_cases, n.ahead = 10, 0, 1, 5)
+fc_10_Ellis$pred
+fcd_10_Ellis <- sarima.for(Ellis_deaths, n.ahead = 10, 1, 1, 4) 
+fcd_10_Ellis$pred
+# Harris
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsHarrisTX)
+Harris_cases <- tsHarrisTX[, "Cases"]
+Harris_cases_train <- Harris_cases %>% window(end = c(2020, 120))
+Harris_cases_test <- Harris_cases %>% window(end = c(2020, 130))
+Harris_deaths <- tsHarrisTX[, "Deaths"]
+Harris_deaths_train <- Harris_deaths %>% window(end = c(2020, 120))
+Harris_deaths_test <- Harris_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Harris_cases <- auto.arima(Harris_cases, stepwise = FALSE, approximation = FALSE)
+fit_Harris_cases # ARIMA(2, 1, 0), AICc - 1233.25
+autoplot(fit_Harris_cases)
+sarima.for(Harris_cases_train, n.ahead = 20, 2, 1, 0)
+lines(Harris_cases_test)
+checkresiduals(fit_Harris_cases) # does not pass
+fit_Harris_cases2 <- arima(Harris_cases, order = c(1, 1, 5))
+checkresiduals(fit_Harris_cases2) # pass
+fit_Harris_deaths <- auto.arima(Harris_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Harris_deaths # ARIMA(1, 1, 1), AICc - 444.78
+autoplot(fit_Harris_deaths)
+sarima.for(Harris_deaths_train, n.ahead = 20, 1, 1, 1)
+lines(Harris_deaths_test)
+checkresiduals(fit_Harris_deaths) # passes
+# Use best models to forecast further ahead
+fc_10_Harris <- sarima.for(Harris_cases, n.ahead = 10, 1, 1, 5)
+fc_10_Harris$pred
+fcd_10_Harris <- sarima.for(Harris_deaths, n.ahead = 10, 1, 1, 1)
+fcd_10_Harris$pred
+# Tarrant
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(tsTarrantTX)
+Tarrant_cases <- tsTarrantTX[, "Cases"]
+Tarrant_cases_train <- Tarrant_cases %>% window(end = c(2020, 120))
+Tarrant_cases_test <- Tarrant_cases %>% window(end = c(2020, 130))
+Tarrant_deaths <- tsTarrantTX[, "Deaths"]
+Tarrant_deaths_train <- Tarrant_deaths %>% window(end = c(2020, 120))
+Tarrant_deaths_test <- Tarrant_deaths %>% window(end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Tarrant_cases <- auto.arima(Tarrant_cases, stepwise = FALSE, approximation = FALSE)
+fit_Tarrant_cases # ARIMA(3, 1, 2), AICc - 1076.92
+autoplot(fit_Tarrant_cases)
+sarima.for(Tarrant_cases_train, n.ahead = 20, 3, 1, 2)
+lines(Tarrant_cases_test)
+checkresiduals(fit_Tarrant_cases) # does not pass Ljung Box test
+fit_Tarrant_cases2 <- arima(Tarrant_cases, order = c(3, 1, 8))
+checkresiduals(fit_Tarrant_cases2) # passes
+fit_Tarrant_deaths <- auto.arima(Tarrant_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Tarrant_deaths # ARIMA(2, 1, 3), AICc - 375.33
+autoplot(fit_Tarrant_deaths)
+sarima.for(Tarrant_deaths_train, n.ahead = 20, 2, 1, 3)
+lines(Tarrant_deaths_test)
+checkresiduals(fit_Tarrant_deaths) # does not pass
+fit_Tarrant_deaths2 <- arima(Tarrant_deaths, order = c(2, 2, 6))
+checkresiduals(fit_Tarrant_deaths2) # passes
+# Use best models to forecast further ahead
+fc_10_Tarrant <- sarima.for(Tarrant_cases, n.ahead = 10, 3, 1, 8)
+fc_10_Tarrant$pred
+fcd_10_Tarrant <- sarima.for(Tarrant_deaths, n.ahead = 10, 2, 2, 6) 
+fcd_10_Tarrant$pred
+```
+V. Linear Regression on MN counties to account for constants
+  A. Load current data and add constant variables
+  B. Reshape data into long and wide forms
+  C. Build linear regression models for cases and deaths
+```{r}
+# https://stats.stackexchange.com/questions/99907/how-to-test-the-influence-of-external-factors-on-time-series
+# https://bookdown.org/ccolonescu/RPoE4/
+# USE USAFACTS CUMULATIVE CASES AND DEATHS FILES
+# EXPLODE OUT COLUMNS SO THAT EACH REPRESENTS A RECORD
+# ADD POPULATION, TOTAL CASES, TOTAL DEATHS
+# RUN ML ALGORITHM TO PREDICT (LINEAR REG)
+
+# load in MN county level data from usafacts (wide form)
+# http://www.cookbook-r.com/Manipulating_data/Converting_data_between_wide_and_long_format/
+MN_0613 <- MN_0613 %>% filter(State == "MN") %>% filter(FIPS != "0") # remove unallocated cases
+MN_0613 <- MN_0613[, -(3)] # remove State
+str(MN_0613)
+tail(MN_0613)
+# load in extra variables
+str(county_data)
+county_data <- county_data[, c(1, 7, 9, 10)] # remove unnecessary columns
+MN_0613_full <- MN_0613 %>% left_join(county_data, by = "FIPS")
+str(MN_0613_full)
+summary(MN_0613_full) # notice which columns contain nothing but 0 values (cols 3:46)
+tail(MN_0613_full)
+MN_0613_full <- MN_0613_full[,-(3:46)] # remove columns with no cases
+data_wide <- as.data.frame(t(MN_0613_full))
+class(data_wide)
+head(data_wide, 1)
+colnames(data_wide) <- MN_0613_full$countyname
+data_wide <- data_wide[-1, ] # remove countyFIPS row
+str(data_wide)
+head(data_wide)
+data_long <- gather(MN_0613_full, date, cases, X3.5.20:X6.13.20, factor_key = TRUE)
+str(data_long)
+summary(data_long)
+data_long$meat_plant <- as.factor(data_long$meat_plant)
+data_long$meat_plant <- as.numeric(data_long$meat_plant)
+str(data_long)
+data_long[500:550, ] # view a piece of the data frame
+# basic EDA
+plot_num(data_long)
+cor(data_long[, c(2, 3, 4, 6)]) # no obvious correlation between variables, highest cor is cases and pop
+pairs(data_long[, c(2, 3, 4, 6)])
+# write.csv(data_long, "MN_0613_full.csv", row.names = FALSE)
+# write.csv(data_wide, "MN_0613_full2.csv", row.names = FALSE)
+# predict cases using linear regression
+# https://www.statmethods.net/stats/regression.html
+# http://r-statistics.co/Model-Selection-in-R.html
+# https://bookdown.org/ccolonescu/RPoE4/simplelm.html
+mod1 <- lm(cases ~ ., data = data_long)
+summary(mod1)# variables are all significant but adj R-squared is quite low (0.3985)
+selectedMod <- step(mod1) # no improvement to AIC to exclude any variable
+summary(selectedMod) # best model includes all variables
+# can't use data.wide b/c there are too many variables
+# http://www.sthda.com/english/articles/38-regression-model-validation/157-cross-validation-essentials-in-r/
+# split data into training and test set
+set.seed(307)
+training.samples <- data_long$cases %>% createDataPartition(p = 0.8, list = FALSE)
+reg_train <- data_long[training.samples, ]
+reg_test <- data_long[-training.samples, ]
+mod2 <- lm(cases ~ ., data = reg_train)
+pred <- mod2 %>% predict(reg_test)
+data.frame(R2 = R2(pred, reg_test$cases),
+           RMSE = RMSE(pred, reg_test$cases),
+           MAE = MAE(pred, reg_test$cases)) # look for lowest test sample RMSE, Root Mean Sq Error (365.1917)
+RMSE(pred, reg_test$cases)/mean(reg_test$cases) # we want this as small as possible (4.12)
+# K-fold cv
+set.seed(307)
+train.control <- trainControl(method = "cv", number = 10)
+mod4 <- train(cases ~ ., data = data_long, method = "lm", trControl = train.control)
+print(mod4) # RMSE 422.8452 higher than base model
+pred4 <- mod4 %>% predict(reg_train)
+RMSE(pred4, reg_test$cases)/mean(reg_test$cases) # 6.13 higher than base model
+# repeated K-fold cv
+set.seed(307)
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+mod5 <- train(cases ~ ., data = data_long, method = "lm", trControl = train.control)
+print(mod5) # RMSE 422.9541 higher than other two models
+pred5 <- mod5 %>% predict(reg_train)
+RMSE(pred5, reg_test$cases)/mean(reg_test$cases) # 6.13
+
+# Repeat for deaths
+MN_0613d <- MN_0613d %>% filter(State == "MN") %>% filter(countyFIPS != "0") # remove unallocated deaths
+MN_0613d <- MN_0613d[, -(3)] # remove State
+str(MN_0613d)
+tail(MN_0613d)
+# load in extra variables
+MN_0613d_full <- MN_0613d %>% left_join(county_data, by = "countyFIPS")
+str(MN_0613d_full)
+summary(MN_0613d_full) # notice which columns contain nothing but 0 values (cols 4:62)
+tail(MN_0613d_full)
+MN_0613d_full <- MN_0613d_full[,-(3:62)] # remove columns with no cases
+data_wideD <- as.data.frame(t(MN_0613d_full))
+class(data_wideD)
+head(data_wideD, 1)
+colnames(data_wideD) <- MN_0613d_full$countyname
+data_wideD <- data_wideD[-1, ] # remove countyFIPS row
+str(data_wideD)
+head(data_wideD)
+data_longD <- gather(MN_0613d_full, date, deaths, X3.21.20:X6.13.20, factor_key = TRUE)
+str(data_longD)
+summary(data_longD)
+data_longD <- data_longD[, 2:7] # drop countyFIPS column
+data_longD$meat_plant <- as.factor(data_longD$meat_plant)
+data_longD$meat_plant <- as.numeric(data_longD$meat_plant)
+str(data_longD)
+data_longD[500:550, ] # view a piece of the data frame
+# basic EDA
+plot_num(data_longD)
+cor(data_longD[, c(2, 3, 4, 6)]) # no obvious correlation between variables, highest cor is deaths and pop
+pairs(data_longD[, c(2, 3, 4, 6)])
+# write.csv(data_longD, "MN_0613d_full.csv", row.names = FALSE)
+# predict cases using linear regression
+mod1d <- lm(deaths ~ ., data = data_longD)
+summary(mod1d)# variables are all significant and adj R-squared is okay (0.5631)
+selectedModD <- step(mod1d) # no improvement to AIC to exclude any variable
+summary(selectedModD) # best model includes all variables
+# split data into training and test set
+set.seed(307)
+training.samplesD <- data_longD$deaths %>% createDataPartition(p = 0.8, list = FALSE)
+reg_trainD <- data_longD[training.samplesD, ]
+reg_testD <- data_longD[-training.samplesD, ]
+mod2D <- lm(deaths ~ ., data = reg_trainD)
+predD <- mod2D %>% predict(reg_testD)
+data.frame(R2 = R2(predD, reg_testD$deaths),
+           RMSE = RMSE(predD, reg_testD$deaths),
+           MAE = MAE(predD, reg_testD$deaths)) # look for lowest test sample RMSE, Root Mean Sq Error (30.59)
+RMSE(predD, reg_testD$deaths)/mean(reg_testD$deaths) # we want this as small as possible (5.87)
+# K-fold cv
+set.seed(307)
+train.control <- trainControl(method = "cv", number = 10)
+mod4D <- train(deaths ~ ., data = data_longD, method = "lm", trControl = train.control)
+print(mod4D) # RMSE 0.55 much lower than base model
+pred4D <- mod4D %>% predict(reg_trainD)
+RMSE(pred4D, reg_testD$deaths)/mean(reg_testD$deaths) # 9.99 higher than base model
+# repeated K-fold cv
+set.seed(307)
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+mod5D <- train(deaths ~ ., data = data_longD, method = "lm", trControl = train.control)
+print(mod5D) # RMSE 0.55 same as cv model
+pred5D <- mod5D %>% predict(reg_trainD)
+RMSE(pred5D, reg_testD$deaths)/mean(reg_testD$deaths) # 9.99 very poor predictor
+```
+VI. Vector Autoregression (VAR)
+  A. Perform VAR on MN counties (9) and select counties (3)
+  B. Perform VAR on US states (7) and select states(3)
+  C. Forecast 12 days out on all models
+```{r}
+# VAR for combined counties and add in other variables
+# try multiple counties and focus on one variable (cases or deaths)
+# https://bookdown.org/singh_pratap_tejendra/intro_time_series_r/multivariate-ts-analysis.html
+# http://past.rinfinance.com/agenda/2013/talk/RueyTsay.pdf
+# https://subscription.packtpub.com/book/big_data_and_business_intelligence/9781783552078/1/ch01lvl1sec08/multivariate-time-series-analysis
+
+# use recent data from usafacts and limit to cases but include multiple counties
+MN_9cum <- as.data.frame(t(MN_9cum))
+MN_9cum <- MN_9cum[5:148, ]
+colnames(MN_9cum) <- c("A", "C", "D", "H", "K", "N", "R", "S", "W")
+dim(MN_9cum)
+str(MN_9cum)
+tail(MN_9cum)
+MN_9cum <- MN_9cum %>% mutate_if(is.factor, as.character)
+MN_9cum <- MN_9cum %>% mutate_if(is.character, as.integer)
+# truncate to remove days prior to reporting (first case occurs on row 45) - pause b/c of VAR restrictions
+tail(MN_9cum, 15)
+# add col that shows difference between values (USAfacts data is cumulative)
+MN_9 <- MN_9cum
+start = 0
+MN_9$Anoka <- c(start, diff(MN_9$A))
+MN_9$Clay <- c(start, diff(MN_9$C))
+MN_9$Dakota <- c(start, diff(MN_9$D))
+MN_9$Hennepin <- c(start, diff(MN_9$H))
+MN_9$Kandiyohi <- c(start, diff(MN_9$K))
+MN_9$Nobles <- c(start, diff(MN_9$N))
+MN_9$Ramsey <- c(start, diff(MN_9$R))
+MN_9$Stearns <- c(start, diff(MN_9$S))
+MN_9$Washington <- c(start, diff(MN_9$W))
+head(MN_9, 10)
+MN_9 <- MN_9[, 10:18]
+# convert to ts
+MN_9ts <- ts(MN_9, start = c(2020, 51), frequency = 365)
+str(MN_9ts)
+autoplot(MN_9ts, main = "Time series plot of the MN_9 data")
+# determine k for adf.test
+trunc((length(MN_9)-1)^(1/3))
+# perform adf.test to check for stationarity (H0 = non-stationary)
+apply(MN_9ts, 2, adf.test) # none of the ts is stationary yet
+# difference the entire multivariate ts
+MN_9tsdiff <- diffM(MN_9)
+MN_9[45:55, ]
+MN_9tsdiff[45:55, ]
+apply(MN_9tsdiff, 2, adf.test) # now stationary (p value < 0.05)
+MN_9tsdiff <- ts(MN_9tsdiff)
+autoplot(MN_9tsdiff, main = "Time series plot of the stationary (differenced) MN_9ts data")
+# lag order identification
+VARselect(MN_9tsdiff, type = "none", lag.max = 15) # 11 is best lag for most selection criteria
+# https://www.rdocumentation.org/packages/vars/versions/1.5-3/topics/VARselect
+# https://cran.r-project.org/web/packages/vars/vars.pdf
+# if we include dist, pop, and meat_plant here, are they exogenous regressors?
+# create the VAR model
+var.MN_9 <- VAR(MN_9tsdiff, type = "none", lag.max = 10, ic = "AIC") # errors above 10 due to small size of ts
+summary(var.MN_9) # relatively good model with low p-values and high adj r-squared
+# diagnostic tests = Portmanteau Test
+serial.test(var.MN_9) # p-value below 0.05 indicates we have autocorrelation in errors
+# Granger test for causality (all show causality)
+causality(var.MN_9, cause = c("Anoka")) # there is causality (low p-values for both Granger and Instant)
+causality(var.MN_9, cause = c("Clay")) # there is causality (low p-values for both Granger and Instant)
+causality(var.MN_9, cause = c("Dakota")) # there is causality (low p-values for both Granger and Instant)
+causality(var.MN_9, cause = c("Hennepin")) # causality, significant
+causality(var.MN_9, cause = c("Kandiyohi")) # causality
+causality(var.MN_9, cause = c("Nobles")) # causality
+causality(var.MN_9, cause = c("Ramsey")) # causality
+causality(var.MN_9, cause = c("Stearns")) # causality
+causality(var.MN_9, cause = c("Washington")) # causality
+# other diagnostic tests
+arch.test(var.MN_9) # test for autoregressive conditional heteroscedasticity (ARCH), p-value = 1
+normality.test(var.MN_9) # p-value below 0.05
+# try p = 5 b/c that's what the Augmented Dickey-Fuller test indicated
+var.MN_9a <- VAR(MN_9tsdiff, type = "none", p = 5)
+serial.test(var.MN_9a) # p-value is same as original model, much too low
+# even though both models have flaws, use original model to forecast 
+fcastMN_9 <- predict(var.MN_9, n.ahead = 12) # predict through 06.25.20
+fcastMN_9 # values seem to be volatile considering some counties have small #'s of cases at tail of data
+par(mar = c(0.5, 0.5, 0.5, 0.5))
+plot(fcastMN_9) # forecasts are much too varied compared to differenced data
+# pull out just the Hennepin county fcasts
+Hennepin <- fcastMN_9$fcst[4]; Hennepin
+Hennepin <- Hennepin$Hennepin[, 1]; Hennepin
+# Invert the differencing (add the last value of the ts data to the forecasts)
+tail(MN_9) # cases added each day - use this # b/c we differenced this data
+tail(MN_9cum) # total cases
+Hennepin <- Hennepin + 135
+Hennepin # many of these are impossible #'s because lowest possible is 0
+par(mfrow = c(1, 1))
+plot.ts(Hennepin)
+# add data and forecast to one time series
+Henn_full <- ts(c(MN_9[, 4], Hennepin), start = c(2020, 22), frequency = 365)
+plot(Henn_full)
+# not a good model at all! 
+# First, truncate data and use lower p in VAR model (because data is smaller) - first case appears on day 45
+MN_9b<- MN_9[45:144, ]
+MN_9bdiff <- diffM(MN_9b)
+MN_9btsdiff <- ts(MN_9bdiff)
+autoplot(MN_9btsdiff, main = "Time series plot of the stationary (differenced) MN_9ts data, truncated")
+# lag order identification
+VARselect(MN_9btsdiff, type = "none", lag.max = 9) # 9 is best lag for  selection criteria
+# create the VAR model
+var.MN_9b <- VAR(MN_9btsdiff, type = "none", lag.max = 9, ic = "AIC") # errors above 10 due to small size of ts
+summary(var.MN_9b)
+# diagnostic tests = Portmanteau Test
+serial.test(var.MN_9b) # p-value below 0.05 still
+#Try fewer counties?
+# use Hennepin, Kandiyohi, and Stearns (my hypothesis is that Henn is lagging indicator for Kandi and Stearns)
+MN_3 <- MN_9b[, c(4, 5, 8)]
+MN_3diff <- diffM(MN_3)
+MN_3tsdiff <- ts(MN_3diff, start = c(2020, 45), frequency = 365)
+autoplot(MN_3tsdiff, main = "Time series plot of the stationary (differenced) MN_3 data")
+# build model
+VARselect(MN_3tsdiff, type = "none") # try 9 (can't do 10 b/c of error)
+var.MN_3 <- VAR(MN_3tsdiff, type = "none", p = 9)
+serial.test(var.MN_3) # p-value too low
+# generate impulse response functions to describe response of Stearns to Hennepin changes
+# https://kevinkotze.github.io/ts-7-tut/
+# https://www.r-econometrics.com/timeseries/varintro/ 
+irf.stearns <- irf(var.MN_3, n.ahead = 12, impulse = "Hennepin", response = "Stearns", runs = 500)
+plot(irf.stearns, ylab = "Stearns Cases", main = "Shock from Hennepin Cases")
+irf.hennepin <- irf(var.MN_3, impulse = "Stearns", response = "Hennepin", n.ahead = 12, runs = 500)
+plot(irf.hennepin, ylab = "Hennepin Cases", main = "Shock from Stearns Cases")
+irf.henn2 <- irf(var.MN_3, impulse = "Hennepin", response = "Hennepin", n.ahead = 12, runs = 500)
+plot(irf.henn2, ylab = "Hennepin Cases", main = "Shock from Hennepin Cases")
+MN_3.vardec <- fevd(var.MN_3, n.ahead = 12) # forecast error variance decompositions
+plot(MN_3.vardec)
+# view forecasts using MN_3 model VAR(9)
+fcastMN_3 <- predict(var.MN_3, n.ahead = 12) # predict through 06.25.20
+fcastMN_3 # better than full model
+plot(fcastMN_3, names = "Stearns") 
+plot(fcastMN_3, names = "Hennepin")
+plot(fcastMN_3, names = "Kandiyohi")
+fanchart(fcastMN_3)
+# pull out just the Hennepin county fcasts
+Hennepin3 <- fcastMN_3$fcst[1]; Hennepin
+Hennepin3 <- Hennepin3$Hennepin[, 1]; Hennepin
+# Invert the differencing (add the last value of the ts data to the forecasts)
+tail(MN_9) # cases added each day - use this # b/c we differenced this data
+tail(MN_9cum) # total cases
+Hennepin3 <- Hennepin3 + 135
+Hennepin3 # these values seem more realistic
+par(mfrow = c(1, 1))
+plot.ts(Hennepin3)
+# add data and forecast to one time series
+Henn3_full <- ts(c(MN_3[, 1], Hennepin3), start = c(2020, 45), frequency = 365)
+plot(Henn3_full)
+# model looks somewhat better
+# view Kandiyohi and Stearns data
+Kandi3 <- fcastMN_3$fcst[2]
+Kandi3 <- Kandi3$Kandiyohi[, 1]
+Kandi3 <- Kandi3 + 3
+Kandi3 # some negative values (cases cannot be below 0)
+Kandi3_full <- ts(c(MN_3[, 2], Kandi3), start = c(2020, 45), frequency = 365)
+plot(Kandi3_full)
+Stearns3 <- fcastMN_3$fcst[3]
+Stearns3 <- Stearns3$Stearns[, 1]
+Stearns3 <- Stearns3 + 4
+Stearns3 # negative value
+Stearns3_full <- ts(c(MN_3[, 3], Stearns3), start = c(2020, 45), frequency = 365)
+plot(Stearns3_full)
+# add pop, distance, and meat_plant to 3 counties to see if they are exogenous regressors
+MN_9
+MN_3b <- MN_3
+# query pop, dist, and meat_plant from MN_0613_full (from MNcounties.regression.R code)
+tail(MN_9cum)
+HennVariables <- MNdata_full %>% filter(County == "Hennepin") %>% filter(Date == "5/9/20")
+HennVariables # pop = 1265843, dist = 0, meat = N
+KandiVariables <- MNdata_full %>% filter(County == "Kandiyohi") %>% filter(Date == "5/9/20")
+KandiVariables # pop = 43199, dist = 75.32, meat = Y
+StearnsVariables <- MNdata_full %>% filter(County == "Stearns") %>% filter(Date == "5/9/20")
+StearnsVariables # pop = 161075, dist = 66.98, meat = Y
+MN_3b$HennPop <- 1265843
+MN_3b$HennDist <- 0
+MN_3b$HennMeat <- 1
+MN_3b$KandiPop <- 43199
+MN_3b$KandiDist <- 75.32
+MN_3b$KandiMeat <- 2
+MN_3b$StearnsPop <- 161075
+MN_3b$StearnsDist <- 66.98
+MN_3b$StearnsMeat <- 2
+MN_3b
+# build new VAR model with MN_3b
+MN_3btsdiff <- ts(diffM(MN_3b), start = c(2020, 45), frequency = 365)
+autoplot(MN_3btsdiff, main = "Time series plot of the stationary (differenced) MN_3b data")
+VARselect(MN_3btsdiff, type = "trend") # cannot build model (all scores = -Inf)
+var.MN_3b <- VAR(MN_3btsdiff, type = "none", p = 1)
+serial.test(var.MN_3b) # error
+# CONSTANTS cannot be added to VAR Models - look into regression model or xreg in ARIMA (ARIMAX)
+
+# use recent data from usafacts and limit to deaths but include multiple counties
+MN_9dcum <- as.data.frame(t(MN_9dcum))
+MN_9dcum <- MN_9dcum[5:148, ]
+colnames(MN_9dcum) <- c("A", "C", "D", "H", "K", "N", "R", "S", "W")
+dim(MN_9dcum)
+str(MN_9dcum)
+tail(MN_9dcum)
+MN_9dcum <- MN_9dcum %>% mutate_if(is.factor, as.character)
+MN_9dcum <- MN_9dcum %>% mutate_if(is.character, as.integer)
+head(MN_9dcum, 60)
+# truncate to remove days prior to reporting (first death occurs on row 59)
+MN_9dcum <- MN_9dcum[58:144, ]
+tail(MN_9dcum, 15)
+# add col that shows difference between values (USAfacts data is cumulative)
+MN_9d <- MN_9dcum
+start = 0
+MN_9d$Anoka <- c(start, diff(MN_9d$A))
+MN_9d$Clay <- c(start, diff(MN_9d$C))
+MN_9d$Dakota <- c(start, diff(MN_9d$D))
+MN_9d$Hennepin <- c(start, diff(MN_9d$H))
+MN_9d$Kandiyohi <- c(start, diff(MN_9d$K))
+MN_9d$Nobles <- c(start, diff(MN_9d$N))
+MN_9d$Ramsey <- c(start, diff(MN_9d$R))
+MN_9d$Stearns <- c(start, diff(MN_9d$S))
+MN_9d$Washington <- c(start, diff(MN_9d$W))
+head(MN_9d, 10)
+MN_9d <- MN_9d[, 10:18]
+# convert to ts
+MN_9dts <- ts(MN_9d, start = c(2020, 58), frequency = 365)
+str(MN_9dts)
+autoplot(MN_9dts, main = "Time series plot of the MN_9 data")
+# determine k for adf.test
+trunc((length(MN_9d)-1)^(1/3))
+# perform adf.test to check for stationarity (H0 = non-stationary)
+apply(MN_9dts, 2, adf.test) # none of the ts is stationary yet
+# difference the entire multivariate ts
+MN_9dtsdiff <- diffM(MN_9d)
+MN_9d[45:55, ]
+MN_9dtsdiff[45:55, ]
+apply(MN_9dtsdiff, 2, adf.test) # now stationary (p value < 0.05)
+MN_9dtsdiff <- ts(MN_9dtsdiff)
+autoplot(MN_9dtsdiff, main = "Time series plot of the stationary (differenced) MN_9ts data")
+# lag order identification
+VARselect(MN_9dtsdiff, type = "none", lag.max = 15) # 8 is best lag for all selection criteria
+# create the VAR model
+var.MN_9d <- VAR(MN_9dtsdiff, type = "none", lag.max = 8, ic = "AIC") # errors above 10 due to small size of ts
+summary(var.MN_9d) # relatively good model with low p-values and high adj r-squared
+# diagnostic tests = Portmanteau Test
+serial.test(var.MN_9d) # p-value below 0.05 indicates we have autocorrelation in errors
+# Granger test for causality (all show causality)
+causality(var.MN_9d, cause = c("Anoka")) # there is causality (low p-values for both Granger and Instant)
+causality(var.MN_9d, cause = c("Clay")) # there is causality (low p-values for both Granger and Instant)
+causality(var.MN_9d, cause = c("Dakota")) # there is causality (low p-values for both Granger and Instant)
+causality(var.MN_9d, cause = c("Hennepin")) # causality, significant
+causality(var.MN_9d, cause = c("Kandiyohi")) # causality
+causality(var.MN_9d, cause = c("Nobles")) # causality
+causality(var.MN_9d, cause = c("Ramsey")) # causality
+causality(var.MN_9d, cause = c("Stearns")) # causality
+causality(var.MN_9d, cause = c("Washington")) # causality
+# other diagnostic tests
+arch.test(var.MN_9d) # test for autoregressive conditional heteroscedasticity (ARCH), p-value = 1
+normality.test(var.MN_9d) # p-value below 0.05
+# use original model to forecast deaths
+fcastMN_9d <- predict(var.MN_9d, n.ahead = 12) # predict through 06.25.20
+fcastMN_9d
+par(mar = c(0.5, 0.5, 0.5, 0.5))
+plot(fcastMN_9d) # forecasts are much too varied compared to differenced data (same problem as cases VAR model)
+# pull out just the Hennepin county fcasts
+HennepinD <- fcastMN_9d$fcst[4]; Hennepin
+HennepinD <- HennepinD$Hennepin[, 1]; Hennepin
+# Invert the differencing (add the last value of the ts data to the forecasts)
+tail(MN_9d) # cases added each day - use this # b/c we differenced this data
+tail(MN_9dcum) # total cases
+HennepinD <- HennepinD + 4
+HennepinD # many of these are impossible #'s because lowest possible is 0
+par(mfrow = c(1, 1))
+plot.ts(HennepinD)
+# add data and forecast to one time series
+Henn_fulld <- ts(c(MN_9d[, 4], HennepinD), start = c(2020, 58), frequency = 365)
+plot(Henn_fulld) # far too volatile
+# not a good model at all! 
+#Try 3 counties
+# use Hennepin, Kandiyohi, and Stearns (my hypothesis is that Henn is lagging indicator for Kandi and Stearns)
+MN_3d <- MN_9d[, c(4, 5, 8)]
+MN_3ddiff <- diffM(MN_3d)
+MN_3dtsdiff <- ts(MN_3ddiff, start = c(2020, 58), frequency = 365)
+autoplot(MN_3dtsdiff, main = "Time series plot of the stationary (differenced) MN_3d data")
+# build model
+VARselect(MN_3dtsdiff, type = "none") # 8, 2, 1
+var.MN_3d <- VAR(MN_3dtsdiff, type = "none", ic = "AIC")
+serial.test(var.MN_3d) # p-value too low (but better than cases model)
+# generate impulse response functions to describe response of Stearns to Hennepin changes
+# https://kevinkotze.github.io/ts-7-tut/
+# https://www.r-econometrics.com/timeseries/varintro/ 
+irf.stearnsd <- irf(var.MN_3d, n.ahead = 12, impulse = "Hennepin", response = "Stearns", runs = 500)
+plot(irf.stearnsd, ylab = "Stearns Cases", main = "Shock from Hennepin Cases")
+irf.hennepind <- irf(var.MN_3d, impulse = "Stearns", response = "Hennepin", n.ahead = 12, runs = 500)
+plot(irf.hennepind, ylab = "Hennepin Cases", main = "Shock from Stearns Cases")
+irf.henn2d <- irf(var.MN_3d, impulse = "Hennepin", response = "Hennepin", n.ahead = 12, runs = 500)
+plot(irf.henn2d, ylab = "Hennepin Cases", main = "Shock from Hennepin Cases")
+MN_3d.vardec <- fevd(var.MN_3d, n.ahead = 12) # forecast error variance decompositions
+plot(MN_3d.vardec) # other counties have less influence on forecasting deaths than cases
+# view forecasts using MN_3d model
+fcastMN_3d <- predict(var.MN_3d, n.ahead = 12) # predict through 06.25.20
+fcastMN_3d # better than full model
+plot(fcastMN_3d, names = "Stearns") 
+plot(fcastMN_3d, names = "Hennepin")
+plot(fcastMN_3d, names = "Kandiyohi")
+fanchart(fcastMN_3d)
+# pull out just the Hennepin county fcasts
+Hennepin3d <- fcastMN_3d$fcst[1]; Hennepin
+Hennepin3d <- Hennepin3d$Hennepin[, 1]; Hennepin
+# Invert the differencing (add the last value of the ts data to the forecasts)
+tail(MN_9d) # cases added each day - use this # b/c we differenced this data
+tail(MN_9dcum) # total cases
+Hennepin3d <- Hennepin3d + 4
+Hennepin3d # these values seem more realistic
+par(mfrow = c(1, 1))
+plot.ts(Hennepin3d)
+# add data and forecast to one time series
+Henn3d_full <- ts(c(MN_3d[, 1], Hennepin3d), start = c(2020, 58), frequency = 365)
+plot(Henn3d_full)
+# model looks somewhat better
+# view Kandiyohi and Stearns data
+Kandi3d <- fcastMN_3d$fcst[2]
+Kandi3d <- Kandi3d$Kandiyohi[, 1]
+Kandi3d <- Kandi3d + 0
+Kandi3d # some negative values (cases cannot be below 0), values too small
+Kandi3d_full <- ts(c(MN_3d[, 2], Kandi3d), start = c(2020, 58), frequency = 365)
+plot(Kandi3d_full)
+Stearns3d <- fcastMN_3d$fcst[3]
+Stearns3d <- Stearns3d$Stearns[, 1]
+Stearns3d <- Stearns3d + 1
+Stearns3d
+Stearns3d_full <- ts(c(MN_3d[, 3], Stearns3d), start = c(2020, 58), frequency = 365)
+plot(Stearns3d_full) # values too small to predict well
+
+# repeat MNcounties_VAR steps for chosen USstates
+# use recent data from usafacts and limit to cases but include multiple counties
+str(US_7cum)
+US_7cum <- as.data.frame(t(US_7cum))
+US_7cum <- US_7cum[2:145, ]
+colnames(US_7cum) <- c("CO", "MI", "MN", "NE", "PA", "SD", "TX")
+dim(US_7cum)
+str(US_7cum)
+tail(US_7cum)
+US_7cum <- US_7cum %>% mutate_if(is.factor, as.character)
+US_7cum <- US_7cum %>% mutate_if(is.character, as.integer)
+# truncate to remove days prior to reporting (first case occurs on row 45)
+US_7cum <- US_7cum[44:144, ]
+US_7cum
+# SKIP THIS STEP TO SEE IF MODEL WORKS WITH CUM DATA
+# add col that shows difference between values (USAfacts data is cumulative)
+US_7 <- US_7cum
+start = 0
+US_7$CO <- c(start, diff(US_7$CO))
+US_7$MI <- c(start, diff(US_7$MI))
+US_7$MN <- c(start, diff(US_7$MN))
+US_7$NE <- c(start, diff(US_7$NE))
+US_7$PA <- c(start, diff(US_7$PA))
+US_7$SD <- c(start, diff(US_7$SD))
+US_7$TX <- c(start, diff(US_7$TX))
+head(US_7, 10)
+# convert to ts
+US_7ts <- ts(US_7, start = c(2020, 44), frequency = 365)
+str(US_7ts)
+autoplot(US_7ts, main = "Time series plot of the US_7 data")
+# determine k for adf.test
+trunc((length(US_7)-1)^(1/3))
+# perform adf.test to check for stationarity (H0 = non-stationary)
+apply(US_7ts, 1, adf.test) # ts is not stationary
+# difference the entire multivariate ts
+US_7diff <- diffM(US_7)
+US_7[45:55, ]
+US_7diff[45:55, ]
+apply(US_7diff, 2, adf.test) # now stationary (p value < 0.05)
+US_7tsdiff <- ts(US_7diff)
+autoplot(US_7tsdiff, main = "Time series plot of the stationary (differenced) US_7ts data")
+# lag order identification
+VARselect(US_7tsdiff, type = "none", lag.max = 15) # 13 is best lag for most selection criteria
+# create the VAR model
+var.US_7 <- VAR(US_7tsdiff, type = "none", lag.max = 10, ic = "AIC") # errors above 10 due to small size of ts
+summary(var.US_7) # relatively good model with low p-values and high adj r-squared
+# diagnostic tests = Portmanteau Test
+serial.test(var.US_7) # p-value below 0.05 indicates we have autocorrelation in errors
+# Granger test for causality (all show causality)
+causality(var.US_7, cause = c("CO")) # there is causality (low p-values for both Granger and Instant)
+causality(var.US_7, cause = c("MI")) # there is causality (low p-values for both Granger and Instant)
+causality(var.US_7, cause = c("MN")) # there is causality (low p-values for both Granger and Instant)
+causality(var.US_7, cause = c("NE")) # causality
+causality(var.US_7, cause = c("PA")) # causality
+causality(var.US_7, cause = c("SD")) # causality
+causality(var.US_7, cause = c("TX")) # causality
+# other diagnostic tests
+arch.test(var.US_7) # test for autoregressive conditional heteroscedasticity (ARCH), p-value = 1
+normality.test(var.US_7) # p-value below 0.05
+# forecast
+fcastUS_7 <- predict(var.US_7, n.ahead = 12) # predict through 06.25.20
+fcastUS_7 # values seem to be volatile considering some counties have small #'s of cases at tail of data
+plot(fcastUS_7)
+fanchart(fcastUS_7)
+# pull out just the CO fcasts
+CO <- fcastUS_7$fcst[1]; CO
+CO <- CO$CO[, 1]; CO
+# Invert the differencing (add the last value of the ts data to the forecasts)
+tail(US_7) # cases added each day - use this # b/c we differenced this data
+tail(US_7cum) # total cases
+CO <- CO + 196
+CO # many of these are impossible #'s because lowest possible is 0
+par(mfrow = c(1, 1))
+plot.ts(CO)
+# add data and forecast to one time series
+CO_full <- ts(c(US_7[, 1], CO), start = c(2020, 44), frequency = 365)
+plot(CO_full)
+# not a good model at all! 
+#Try fewer states? 3 counties were successful, so narrow down to 3 states
+# use CO, MN, and TX (my hypothesis is that CO is lagging indicator for MN and TX)
+US_3 <- US_7[, c(1, 3, 7)]
+US_3diff <- diffM(US_3)
+US_3tsdiff <- ts(US_3diff, start = c(2020, 45), frequency = 365)
+autoplot(US_3tsdiff, main = "Time series plot of the stationary (differenced) US_3 data")
+# build model
+VARselect(US_3tsdiff, type = "none") # try 5, 2, 1, 3
+var.US_3 <- VAR(US_3tsdiff, type = "none", p = 5)
+serial.test(var.US_3) # p-value high enough! Not autocorrelated
+# generate impulse response functions to describe response of MN to TX changes
+# https://kevinkotze.github.io/ts-7-tut/
+# https://www.r-econometrics.com/timeseries/varintro/ 
+irf.MN <- irf(var.US_3, n.ahead = 12, impulse = "TX", response = "MN", runs = 500)
+plot(irf.MN, ylab = "MN Cases", main = "Shock from TX Cases")
+irf.TX <- irf(var.US_3, impulse = "MN", response = "TX", n.ahead = 12, runs = 500)
+plot(irf.TX, ylab = "TX Cases", main = "Shock from MN Cases")
+US_3.vardec <- fevd(var.US_3, n.ahead = 12) # forecast error variance decompositions
+plot(US_3.vardec)
+# view forecasts using US_3 model VAR(9)
+fcastUS_3 <- predict(var.US_3, n.ahead = 12) # predict through 06.25.20
+fcastUS_3 # better than full model
+plot(fcastUS_3, names = "CO")
+plot(fcastUS_3, names = "MN")
+plot(fcastUS_3, names = "TX")
+fanchart(fcastUS_3)
+# pull out just the CO fcasts
+CO3 <- fcastUS_3$fcst[1]; CO3
+CO3 <- CO3$CO[, 1]; CO3
+# Invert the differencing (add the last value of the ts data to the forecasts)
+tail(US_3) # cases added each day - use this # b/c we differenced this data
+CO3 <- CO3 + 196
+CO3 # these values seem more realistic (except for the first negative)
+par(mfrow = c(1, 1))
+plot.ts(CO3)
+# add data and forecast to one time series
+CO3_full <- ts(c(US_3[, 1], CO3), start = c(2020, 44), frequency = 365)
+plot(CO3_full)
+# model looks somewhat better
+# view MN and TX data
+MN3 <- fcastUS_3$fcst[2]
+MN3 <- MN3$MN[, 1]
+MN3 <- MN3 + 377
+MN3
+MN3_full <- ts(c(US_3[, 2], MN3), start = c(2020, 44), frequency = 365)
+plot(MN3_full)
+TX3 <- fcastUS_3$fcst[3]
+TX3 <- TX3$TX[, 1]
+TX3 <- TX3 + 2340
+TX3 # looks good
+TX3_full <- ts(c(US_3[, 3], TX3), start = c(2020, 44), frequency = 365)
+plot(TX3_full)
+# use recent data from usafacts and limit to deaths but include multiple counties
+US_7dcum <- as.data.frame(t(US_7dcum))
+str(US_7dcum)
+US_7dcum <- US_7dcum[2:145, ]
+colnames(US_7dcum) <- c("CO", "MI", "MN", "NE", "PA", "SD", "TX")
+dim(US_7dcum)
+str(US_7dcum)
+tail(US_7dcum)
+US_7dcum <- US_7dcum %>% mutate_if(is.factor, as.character)
+US_7dcum <- US_7dcum %>% mutate_if(is.character, as.integer)
+head(US_7dcum, 60)
+# truncate to remove days prior to reporting (first death occurs on row 49)
+US_7dcum <- US_7dcum[48:144, ]
+head(US_7dcum, 15)
+# add col that shows difference between values (USAfacts data is cumulative)
+US_7d <- US_7dcum
+start = 0
+US_7d$CO <- c(start, diff(US_7d$CO))
+US_7d$MI <- c(start, diff(US_7d$MI))
+US_7d$MN <- c(start, diff(US_7d$MN))
+US_7d$NE <- c(start, diff(US_7d$NE))
+US_7d$PA <- c(start, diff(US_7d$PA))
+US_7d$SD <- c(start, diff(US_7d$SD))
+US_7d$TX <- c(start, diff(US_7d$TX))
+head(US_7d, 10)
+# convert to ts
+US_7dts <- ts(US_7d, start = c(2020, 48), frequency = 365)
+str(US_7dts)
+autoplot(US_7dts, main = "Time series plot of the US_7d data")
+# determine k for adf.test
+trunc((length(US_7d)-1)^(1/3))
+# perform adf.test to check for stationarity (H0 = non-stationary)
+apply(US_7dts, 1, adf.test) # entire ts is not stationary yet
+# difference the entire multivariate ts
+US_7dtsdiff <- diffM(US_7d)
+US_7d[45:55, ]
+US_7dtsdiff[45:55, ]
+apply(US_7dtsdiff, 2, adf.test) # now stationary (p value < 0.05)
+US_7dtsdiff <- ts(US_7dtsdiff)
+autoplot(US_7dtsdiff, main = "Time series plot of the stationary (differenced) MN_9ts data")
+# lag order identification
+VARselect(US_7dtsdiff, type = "none", lag.max = 15) # 12 is best lag for all selection criteria
+# create the VAR model
+var.US_7d <- VAR(US_7dtsdiff, type = "none", lag.max = 10, ic = "AIC") # errors above 10 due to small size of ts
+summary(var.US_7d) # relatively good model with low p-values and high adj r-squared
+# diagnostic tests = Portmanteau Test
+serial.test(var.US_7d) # p-value below 0.05 indicates we have autocorrelation in errors
+# Granger test for causality (all show causality)
+causality(var.US_7d, cause = c("CO")) # there is causality (low p-values for both Granger and Instant)
+causality(var.US_7d, cause = c("MI")) # there is causality (low p-values for both Granger and Instant)
+causality(var.US_7d, cause = c("MN")) # there is causality (low p-values for both Granger and Instant)
+causality(var.US_7d, cause = c("NE")) # causality, significant
+causality(var.US_7d, cause = c("PA")) # causality
+causality(var.US_7d, cause = c("SD")) # causality
+causality(var.US_7d, cause = c("TX")) # causality
+# other diagnostic tests
+arch.test(var.US_7d) # test for autoregressive conditional heteroscedasticity (ARCH), p-value = 1
+normality.test(var.US_7d) # p-value below 0.05
+# use original model to forecast deaths
+fcastUS_7d <- predict(var.US_7d, n.ahead = 12) # predict through 06.25.20
+fcastUS_7d
+par(mar = c(0.5, 0.5, 0.5, 0.5))
+plot(fcastUS_7d) # forecasts are much too varied compared to differenced data (same problem as cases VAR model)
+# pull out just the CO fcasts
+COd <- fcastUS_7d$fcst[1]; COd
+COd <- COd$CO[, 1]; COd
+# Invert the differencing (add the last value of the ts data to the forecasts)
+tail(US_7d) # deaths added each day - use this # b/c we differenced this data
+tail(US_7dcum) # total deaths
+COd <- COd + 3
+COd # many of these are impossible #'s because lowest possible is 0
+par(mfrow = c(1, 1))
+plot.ts(COd)
+# add data and forecast to one time series
+CO_fulld <- ts(c(US_7d[, 1], COd), start = c(2020, 48), frequency = 365)
+plot(CO_fulld) # far too volatile
+# not a good model at all! 
+#Try 3 states
+# use CO, MN, and TX (my hypothesis is that CO is lagging indicator for MN and TX)
+US_3d <- US_7d[, c(1, 3, 7)]
+US_3ddiff <- diffM(US_3d)
+US_3dtsdiff <- ts(US_3ddiff, start = c(2020, 48), frequency = 365)
+autoplot(US_3dtsdiff, main = "Time series plot of the stationary (differenced) US_3d data")
+# build model
+VARselect(US_3dtsdiff, type = "none") # 10, 2
+var.US_3d <- VAR(US_3dtsdiff, type = "none", ic = "AIC")
+serial.test(var.US_3d) # p-value too low (but better than cases model)
+# generate impulse response functions to describe response of Stearns to Hennepin changes
+# https://kevinkotze.github.io/ts-7-tut/
+# https://www.r-econometrics.com/timeseries/varintro/ 
+irf.COd <- irf(var.US_3d, n.ahead = 12, impulse = "CO", response = "MN", runs = 500)
+plot(irf.COd, ylab = "MN Cases", main = "Shock from CO Cases")
+irf.MNd <- irf(var.US_3d, impulse = "MN", response = "CO", n.ahead = 12, runs = 500)
+plot(irf.MNd, ylab = "CO Cases", main = "Shock from MN Cases")
+US_3d.vardec <- fevd(var.US_3d, n.ahead = 12) # forecast error variance decompositions
+plot(US_3d.vardec) # TX is influenced by MN and CO, but others are not influenced by any other state
+# view forecasts using US_3d model
+fcastUS_3d <- predict(var.US_3d, n.ahead = 12) # predict through 06.25.20
+fcastUS_3d # better than full model
+plot(fcastUS_3d, names = "CO") 
+plot(fcastUS_3d, names = "MN")
+plot(fcastUS_3d, names = "TX")
+fanchart(fcastUS_3d)
+# pull out just the Hennepin county fcasts
+CO3d <- fcastUS_3d$fcst[1]; CO3d
+CO3d <- CO3d$CO[, 1]; CO3d
+# Invert the differencing (add the last value of the ts data to the forecasts)
+tail(US_7d) # cases added each day - use this # b/c we differenced this data
+tail(US_7dcum) # total cases
+CO3d <- CO3d + 3
+CO3d # these values seem more realistic
+par(mfrow = c(1, 1))
+plot.ts(CO3d)
+# add data and forecast to one time series
+CO3d_full <- ts(c(US_3d[, 1], CO3d), start = c(2020, 48), frequency = 365)
+plot(CO3d_full)
+# model looks much better
+# view MN and TX data
+MN3d <- fcastUS_3d$fcst[2]
+MN3d <- MN3d$MN[, 1]
+MN3d <- MN3d + 9
+MN3d # slooks good
+MN3d_full <- ts(c(US_3d[, 2], MN3d), start = c(2020, 48), frequency = 365)
+plot(MN3d_full)
+TX3d <- fcastUS_3d$fcst[3]
+TX3d <- TX3d$TX[, 1]
+TX3d <- TX3d + 1
+TX3d # negative values? 
+TX3d_full <- ts(c(US_3d[, 3], TX3d), start = c(2020, 48), frequency = 365)
+plot(TX3d_full) # values too small to predict well
+
+```
+VII. Final model check
+  A. Load current data through June 24th (COVID cases and deaths)
+  B. Check predictions from 3 key county models against current data (ARIMA, VAR, Regression)
+  C. Check predictions for state of MN against current data (ARIMA, VAR)
+```{r}
+# ADD MORE RECENT DATA TO US, MN, SELECT COUNTIES (FROM USAFACTS)
+# RERUN TS FORECASTS USING UPDATED DATA AND MEASURE ACCURACY, PREDICT NEXT 10 DAYS
+
+# data through 06/12/2020
+# https://usafacts.org/visualizations/coronavirus-covid-19-spread-map/
+
+# steps to combine data
+# filter cases to single county
+MN0612c <- cases0612 %>% filter(State == "MN")
+Hennepin0612c <- MN0612c %>% filter(County.Name == "Hennepin County")
+Hennepin0612c <- Hennepin0612c[, 5:148]
+dim(Hennepin0612c)
+class(Hennepin0612c)
+# invert columns and rows
+x <- as.data.frame(t(Hennepin0612c))
+dim(x)
+class(x)
+colnames(x) <- "V1"
+str(x)
+start <- x[1, 1]
+start
+tail(x)
+# add col that shows difference between values (USAfacts data is cumulative)
+x$diff <- c(start, diff(x$V1))
+x
+colnames(x) <- c("Cum", "Cases")
+# repeat for deaths
+MN0612d <- deaths0612 %>% filter(State == "MN")
+Hennepin0612d <- MN0612d %>% filter(County.Name == "Hennepin County")
+Hennepin0612d <- Hennepin0612d[, 5:148]
+str(Hennepin0612d)
+dim(Hennepin0612d)
+# invert columns and rows
+y <- as.data.frame(t(Hennepin0612d))
+dim(y)
+colnames(y) <- "V1"
+str(y)
+start <- y[1, 1]
+start
+tail(y)
+# add col that shows difference between values (USAfacts data is cumulative)
+y$diff <- c(start, diff(y$V1))
+head(y)
+tail(y)
+colnames(y) <- c("Cum", "Deaths")
+# combine Cases and Deaths
+HennMN0612 <- cbind(x$Cases, y$Deaths)
+colnames(HennMN0612) <- c("Cases", "Deaths")
+HennMN0612
+str(HennMN0612)
+tail(HennMN0612)
+HennMNts <- ts(HennMN0612, start = c(2020, 22), frequency = 365)
+str(HennMNts)
+head(HennMNts)
+HennMNts
+autoplot(HennMNts, main = "COVID-19 Cases and Deaths - Minnesota")
+
+
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(HennMNts)
+Henn_cases <- HennMNts[, "Cases"]
+Henn_cases_train <- Henn_cases %>% window(end = c(2020, 124))
+Henn_cases_test <- Henn_cases %>% window(end = c(2020, 144))
+Henn_deaths <- HennMNts[, "Deaths"]
+Henn_deaths_train <- Henn_deaths %>% window(end = c(2020, 124))
+Henn_deaths_test <- Henn_deaths %>% window(end = c(2020, 144))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Henn_cases <- auto.arima(Henn_cases, stepwise = FALSE, approximation = FALSE)
+fit_Henn_cases # ARIMA(0, 1, 1), AICc - 1603.27
+autoplot(fit_Henn_cases)
+sarima.for(Henn_cases_train, n.ahead = 20, 0, 1, 1)
+lines(Henn_cases_test)
+checkresiduals(fit_Henn_cases) # passes
+fit_Henn_deaths <- auto.arima(Henn_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Henn_deaths # ARIMA(3, 1, 2), AICc - 725.33
+autoplot(fit_Henn_deaths)
+sarima.for(Henn_deaths_train, n.ahead = 20, 3, 1, 2)
+lines(Henn_deaths_test)
+checkresiduals(fit_Henn_deaths) # p-value too low, does not pass Ljung-Box test
+fit_Henn_deaths2 <- arima(Henn_deaths, order = c(6, 1, 1))
+sarima.for(Henn_deaths_train, n.ahead = 20, 6, 1, 1)
+lines(Henn_deaths_test)
+checkresiduals(fit_Henn_deaths2) # passes
+# Use best models to forecast further ahead
+fc_10_Henn <- sarima.for(Henn_cases, n.ahead = 10, 0, 1, 1)
+fc_10_Henn$pred
+fcd_10_Henn <- sarima.for(Henn_deaths, n.ahead = 10, 6, 1, 1) 
+fcd_10_Henn$pred
+
+# REPEAT PROCESS
+# steps to combine data
+# filter cases to single county
+MN0612c <- cases0612 %>% filter(State == "MN")
+Stearns0612c <- MN0612c %>% filter(County.Name == "Stearns County")
+Stearns0612c <- Stearns0612c[, 5:148]
+dim(Stearns0612c)
+# invert columns and rows
+x <- as.data.frame(t(Stearns0612c))
+colnames(x) <- "V1"
+start <- x[1, 1]
+start
+# add col that shows difference between values (USAfacts data is cumulative)
+x$diff <- c(start, diff(x$V1))
+colnames(x) <- c("Cum", "Cases")
+# repeat for deaths
+MN0612d <- deaths0612 %>% filter(State == "MN")
+Stearns0612d <- MN0612d %>% filter(County.Name == "Stearns County")
+Stearns0612d <- Stearns0612d[, 5:148]
+dim(Stearns0612d)
+# invert columns and rows
+y <- as.data.frame(t(Stearns0612d))
+colnames(y) <- "V1"
+start <- y[1, 1]
+start
+# add col that shows difference between values (USAfacts data is cumulative)
+y$diff <- c(start, diff(y$V1))
+colnames(y) <- c("Cum", "Deaths")
+# combine Cases and Deaths
+StearnsMN0612 <- cbind(x$Cases, y$Deaths)
+colnames(StearnsMN0612) <- c("Cases", "Deaths")
+StearnsMNts <- ts(StearnsMN0612, start = c(2020, 22), frequency = 365)
+autoplot(StearnsMNts, main = "COVID-19 Cases and Deaths - MN, Stearns County")
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(StearnsMNts)
+Stearns_cases <- StearnsMNts[, "Cases"]
+Stearns_cases_train <- Stearns_cases %>% window(end = c(2020, 124))
+Stearns_cases_test <- Stearns_cases %>% window(end = c(2020, 144))
+Stearns_deaths <- StearnsMNts[, "Deaths"]
+Stearns_deaths_train <- Stearns_deaths %>% window(end = c(2020, 124))
+Stearns_deaths_test <- Stearns_deaths %>% window(end = c(2020, 144))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Stearns_cases <- auto.arima(Stearns_cases, stepwise = FALSE, approximation = FALSE)
+fit_Stearns_cases # ARIMA(4, 1, 0), AICc - 1197.98
+autoplot(fit_Stearns_cases)
+sarima.for(Stearns_cases_train, n.ahead = 20, 4, 1, 0)
+lines(Stearns_cases_test)
+checkresiduals(fit_Stearns_cases) # p-value too low
+fit_Stearns_cases2 <- arima(Stearns_cases, order = c(4, 1, 2))
+checkresiduals(fit_Stearns_cases2) # passes
+fit_Stearns_deaths <- auto.arima(Stearns_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Stearns_deaths # ARIMA(0, 1, 5), AICc - 94.28
+autoplot(fit_Stearns_deaths)
+sarima.for(Stearns_deaths_train, n.ahead = 20, 0, 1, 5)
+checkresiduals(fit_Stearns_deaths) # p-value too low, does not pass Ljung-Box test
+fit_Stearns_deaths2 <- arima(Stearns_deaths, order = c(0, 1, 6))
+checkresiduals(fit_Stearns_deaths2) # passes
+# Use best models to forecast further ahead
+fc_10_Stearns <- sarima.for(Stearns_cases, n.ahead = 10, 4, 1, 2)
+fc_10_Stearns$pred
+fcd_10_Stearns <- sarima.for(Stearns_deaths, n.ahead = 10, 0, 1, 6) 
+fcd_10_Stearns$pred
+
+# REPEAT PROCESS
+# steps to combine data
+# filter cases to single county
+MN0612c <- cases0612 %>% filter(State == "MN")
+Kandiyohi0612c <- MN0612c %>% filter(County.Name == "Kandiyohi County")
+Kandiyohi0612c <- Kandiyohi0612c[, 5:148]
+dim(Kandiyohi0612c)
+# invert columns and rows
+x <- as.data.frame(t(Kandiyohi0612c))
+colnames(x) <- "V1"
+start <- x[1, 1]
+start
+# add col that shows difference between values (USAfacts data is cumulative)
+x$diff <- c(start, diff(x$V1))
+colnames(x) <- c("Cum", "Cases")
+# repeat for deaths
+MN0612d <- deaths0612 %>% filter(State == "MN")
+Kandiyohi0612d <- MN0612d %>% filter(County.Name == "Kandiyohi County")
+Kandiyohi0612d <- Kandiyohi0612d[, 5:148]
+dim(Kandiyohi0612d)
+# invert columns and rows
+y <- as.data.frame(t(Kandiyohi0612d))
+colnames(y) <- "V1"
+start <- y[1, 1]
+start
+# add col that shows difference between values (USAfacts data is cumulative)
+y$diff <- c(start, diff(y$V1))
+colnames(y) <- c("Cum", "Deaths")
+# combine Cases and Deaths
+KandiyohiMN0612 <- cbind(x$Cases, y$Deaths)
+colnames(KandiyohiMN0612) <- c("Cases", "Deaths")
+KandiyohiMNts <- ts(KandiyohiMN0612, start = c(2020, 22), frequency = 365)
+autoplot(KandiyohiMNts, main = "COVID-19 Cases and Deaths - MN, Kandiyohi County")
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(KandiyohiMNts)
+Kandiyohi_cases <- KandiyohiMNts[, "Cases"]
+Kandiyohi_cases_train <- Kandiyohi_cases %>% window(end = c(2020, 124))
+Kandiyohi_cases_test <- Kandiyohi_cases %>% window(end = c(2020, 144))
+Kandiyohi_deaths <- KandiyohiMNts[, "Deaths"]
+Kandiyohi_deaths_train <- Kandiyohi_deaths %>% window(end = c(2020, 124))
+Kandiyohi_deaths_test <- Kandiyohi_deaths %>% window(end = c(2020, 144))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_Kandiyohi_cases <- auto.arima(Kandiyohi_cases, stepwise = FALSE, approximation = FALSE)
+fit_Kandiyohi_cases # ARIMA(2, 1, 3), AICc - 914.05
+autoplot(fit_Kandiyohi_cases)
+sarima.for(Kandiyohi_cases_train, n.ahead = 20, 2, 1, 3)
+lines(Kandiyohi_cases_test)
+checkresiduals(fit_Kandiyohi_cases) # passes
+fit_Kandiyohi_deaths <- auto.arima(Kandiyohi_deaths, stepwise = FALSE, approximation = FALSE)
+fit_Kandiyohi_deaths # ARIMA(0, 0, 0), AICc - -304.97 White noise model
+autoplot(fit_Kandiyohi_deaths)
+sarima.for(Kandiyohi_deaths_train, n.ahead = 20, 0, 0, 0)
+checkresiduals(fit_Kandiyohi_deaths) # passes Ljung-Box test
+# Use best models to forecast further ahead
+fc_10_Kandiyohi <- sarima.for(Kandiyohi_cases, n.ahead = 10, 2, 1, 3)
+fc_10_Kandiyohi$pred
+fcd_10_Kandiyohi <- sarima.for(Kandiyohi_deaths, n.ahead = 10, 0, 0, 0) 
+fcd_10_Kandiyohi$pred
+
+# REPEAT for MN Data (full state)
+MN0612c <- cases0612 %>% filter(State == "MN")
+MN0612c <- MN0612c[, 5:148]
+dim(MN0612c)
+total <- colSums(MN0612c)
+length(total)
+total <- as.integer(total)
+MN0612c <- rbind(MN0612c, total)
+class(MN0612c)
+MN0612c <- MN0612c[89, ]
+MN0612c
+# invert columns and rows
+x <- as.data.frame(t(MN0612c))
+class(x)
+str(x)
+colnames(x) <- "V1"
+str(x)
+start <- x[1, 1]
+start
+# add col that shows difference between values (USAfacts data is cumulative)
+x$diff <- c(start, diff(x$V1))
+colnames(x) <- c("Cum", "Cases")
+tail(x)
+# repeat for deaths (full state)
+MN0612d <- deaths0612 %>% filter(State == "MN")
+MN0612d <- MN0612d[, 5:148]
+dim(MN0612d)
+total <- colSums(MN0612d)
+length(total)
+total <- as.integer(total)
+MN0612d <- rbind(MN0612d, total)
+class(MN0612d)
+MN0612d <- MN0612d[89, ]
+MN0612d
+# invert columns and rows
+y <- as.data.frame(t(MN0612d))
+colnames(y) <- "V1"
+str(y)
+start <- y[1, 1]
+start
+# add col that shows difference between values (USAfacts data is cumulative)
+y$diff <- c(start, diff(y$V1))
+colnames(y) <- c("Cum", "Deaths")
+tail(y)
+# combine Cases and Deaths
+MN0612 <- cbind(x$Cases, y$Deaths)
+colnames(MN0612) <- c("Cases", "Deaths")
+MNts <- ts(MN0612, start = c(2020, 22), frequency = 365)
+autoplot(MNts, main = "COVID-19 Cases and Deaths - MN")
+# CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
+autoplot(MNts)
+MN_cases <- MNts[, "Cases"]
+MN_cases_train <- MN_cases %>% window(end = c(2020, 124))
+MN_cases_test <- MN_cases %>% window(end = c(2020, 144))
+MN_deaths <- MNts[, "Deaths"]
+MN_deaths_train <- MN_deaths %>% window(end = c(2020, 124))
+MN_deaths_test <- MN_deaths %>% window(end = c(2020, 144))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_MN_cases <- auto.arima(MN_cases, stepwise = FALSE, approximation = FALSE)
+fit_MN_cases # ARIMA(3, 1, 2), AICc - 1716.48
+autoplot(fit_MN_cases)
+sarima.for(MN_cases_train, n.ahead = 20, 3, 1, 2)
+lines(MN_cases_test)
+checkresiduals(fit_MN_cases) # passes
+fit_MN_deaths <- auto.arima(MN_deaths, stepwise = FALSE, approximation = FALSE)
+fit_MN_deaths # ARIMA(3, 1, 2), AICc - 836.77
+autoplot(fit_MN_deaths)
+sarima.for(MN_deaths_train, n.ahead = 20, 3, 1, 2)
+lines(MN_deaths_test)
+checkresiduals(fit_MN_deaths) # does not pass
+fit_MN_deaths2 <- arima(MN_deaths, order = c(4, 1, 3))
+checkresiduals(fit_MN_deaths2) # passes
+sarima.for(MN_deaths_train, n.ahead = 20, 4, 1, 3)
+lines(MN_deaths_test)
+# Use best models to forecast further ahead
+fc_10_MN <- sarima.for(MN_cases, n.ahead = 10, 3, 1, 2)
+fc_10_MN$pred
+fcd_10_MN <- sarima.for(MN_deaths, n.ahead = 10, 4, 1, 3) 
+fcd_10_MN$pred
+```
+

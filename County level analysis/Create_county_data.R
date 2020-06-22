@@ -1,13 +1,14 @@
-# Update County_dist_maxpop file to include state, max_pop_county, and max_pop_countyname
+# Create new file with extra variables (pop, dist, meat) by FIPS
 
 library(tidyverse)
 getwd()
 setwd('/Users/reginaduval/Grad_Work/MSDS692_Practicum1/Project/Data')
 
-data <- read.csv("County_dist_maxpop.csv", header = TRUE)
+data <- read.csv("Distance Data/County_dist_maxpop.csv", header = TRUE)
 class(data)
-data2 <- read.csv("uscities.csv", header = TRUE)
-class(data2)
+head(data)
+data2 <- read.csv("Distance Data/uscities.csv", header = TRUE)
+head(data2)
 
 arrange(data2, -population)
 results <- for (i in unique(data2$state_id)){
@@ -17,7 +18,7 @@ results <- for (i in unique(data2$state_id)){
 }
 
 # results
-data3 <- read.csv("sf12010countydistancemiles.csv", header = TRUE)
+data3 <- read.csv("Distance Data/sf12010countydistancemiles.csv", header = TRUE)
 tail(data3)
 data3$concatenate <- paste0(data3$county1, data3$county2)
 tail(data3)
@@ -43,4 +44,21 @@ head(final_data)
 is.na(final_data)
 write.csv(final_data, "County_data_distance.csv", row.names = FALSE)
 
+# add pop to "County_data_distance.csv" from train2 dataset
 # combine county data with train2 dataset
+dist <- read.csv("County Level/County_data_distance.csv", header = TRUE, stringsAsFactors = FALSE)
+head(dist)
+dim(dist)
+train <- read.csv("train2.csv", header = TRUE, stringsAsFactors = FALSE)
+train_US <- train %>% filter(Country_Region == "US") %>% filter(County != "")
+train_US$concatenate <- paste(train_US$County, train_US$Province_State, sep = "")
+head(train_US)
+dim(train_US)
+train_US <- train_US[, c(4, 8)]
+dist2 <- left_join(dist, train_US, by = "concatenate")
+dim(dist2)
+head(dist2)
+dist2 <- unique(dist2)
+dim(dist2)
+head(dist2)
+write.csv(dist2, "Distance Data/County_data_distance2.csv", row.names = FALSE)

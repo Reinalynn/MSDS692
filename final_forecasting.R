@@ -1,13 +1,13 @@
 # ADD MORE RECENT DATA TO US, MN, SELECT COUNTIES (FROM USAFACTS)
 # RERUN TS FORECASTS USING UPDATED DATA AND MEASURE ACCURACY, PREDICT NEXT 10 DAYS
 
-getwd()
 setwd('/Users/reginaduval/Grad_Work/MSDS692_Practicum1/Project/Data/County Level')
 
 library(data.table)
 library(dplyr)
 library(matrixStats)
 library(varhandle)
+
 
 # data through 06/12/2020
 # https://usafacts.org/visualizations/coronavirus-covid-19-spread-map/
@@ -65,6 +65,7 @@ head(HennMNts)
 HennMNts
 autoplot(HennMNts, main = "COVID-19 Cases and Deaths - Minnesota")
 
+
 # CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
 autoplot(HennMNts)
 Henn_cases <- HennMNts[, "Cases"]
@@ -87,6 +88,8 @@ sarima.for(Henn_deaths_train, n.ahead = 20, 3, 1, 2)
 lines(Henn_deaths_test)
 checkresiduals(fit_Henn_deaths) # p-value too low, does not pass Ljung-Box test
 fit_Henn_deaths2 <- arima(Henn_deaths, order = c(6, 1, 1))
+sarima.for(Henn_deaths_train, n.ahead = 20, 6, 1, 1)
+lines(Henn_deaths_test)
 checkresiduals(fit_Henn_deaths2) # passes
 # Use best models to forecast further ahead
 fc_10_Henn <- sarima.for(Henn_cases, n.ahead = 10, 0, 1, 1)
