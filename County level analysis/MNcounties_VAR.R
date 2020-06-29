@@ -1,23 +1,3 @@
-# VAR for combined counties and add in other variables
-# try multiple counties and focus on one variable (cases or deaths)
-# https://bookdown.org/singh_pratap_tejendra/intro_time_series_r/multivariate-ts-analysis.html
-# http://past.rinfinance.com/agenda/2013/talk/RueyTsay.pdf
-# https://subscription.packtpub.com/book/big_data_and_business_intelligence/9781783552078/1/ch01lvl1sec08/multivariate-time-series-analysis
-
-getwd()
-setwd('/Users/reginaduval/Grad_Work/MSDS692_Practicum1/Project/Data/County Level')
-
-library(astsa)
-library(broom)
-library(dynlm)
-library(forecast)
-library(knitr)
-library(MTS)
-library(tidyverse)
-library(tseries)
-library(urca)
-library(vars)
-
 # use recent data from usafacts and limit to cases but include multiple counties
 MN_9cum <- read.csv("MN_9_0613.csv", header = TRUE, stringsAsFactors = FALSE)
 MN_9cum <- as.data.frame(t(MN_9cum))

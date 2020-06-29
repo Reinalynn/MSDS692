@@ -1,30 +1,6 @@
-  # https://otexts.com/fpp2/lagged-predictors.html
-  # https://a-little-book-of-r-for-time-series.readthedocs.io/en/latest/src/timeseries.html
-  # http://uc-r.github.io/ts_exp_smoothing
-  # https://rstudio-pubs-static.s3.amazonaws.com/303786_f1b99d6b7e9346c4b1488a174bab839a.html
-  # https://robjhyndman.com/eindhoven/3-2-Dynamic-Regression.pdf
-  # https://www.rdocumentation.org/packages/forecast/versions/5.4/topics/Arima
-  # https://community.rstudio.com/t/how-to-compare-a-forecast-model-to-actual-data-and-what-is-uncertainty/23598/2
-  # https://blogs.oracle.com/datascience/introduction-to-forecasting-with-arima-in-r
-  # https://www.otexts.org/fpp2
-  # DataCamp course on ARIMA with R
-  # counties = 87 in MN, 11 in CO, 4 in PA, 2 in MI, 2 in SD, 3 in NE, 4 in TX
-
-getwd()
-setwd('/Users/reginaduval/Grad_Work/MSDS692_Practicum1/Project/Data')
-
-# load time series data
-library(astsa)
-library(forecast)
-library(fpp2)
-library(readxl)
-library(tidyverse)
-library(tseries)
-
-train <- read.csv("train2.csv", header = TRUE, stringsAsFactors = FALSE)
 
 # filter to US totals only (remove state)
-train_US <- train %>% filter(Country_Region == "US") %>% filter(Province_State == "")
+train_US <- kaggle %>% filter(Country_Region == "US") %>% filter(Province_State == "")
 head(train_US)
 tail(train_US)
 # convert dataset to time series and plot
@@ -46,14 +22,14 @@ ggAcf(casesUS) # random walk with trend, need to difference data
 acf(casesUS, plot = FALSE)
 ggPacf(casesUS)
 Pacf(casesUS, plot = FALSE)
-Box.test(casesUS, lag = 7, fitdf = 0, type = "Lj") # p value is small, significant
+Box.test(casesUS, lag = 7, fitdf = 0, type = "Lj") # p value is small, significant (trend in data)
 adf.test(casesUS) # non-stationary
 gglagplot(deathsUS)
 ggAcf(deathsUS) # same as above - need to difference data
 acf(deathsUS, plot = FALSE)
 ggPacf(deathsUS)
 Pacf(deathsUS, plot = FALSE)
-Box.test(deathsUS, lag = 7, fitdf = 0, type = "Lj") # also significant
+Box.test(deathsUS, lag = 7, fitdf = 0, type = "Lj") # also significant (trend in data)
 adf.test(deathsUS) # non-stationary
 
 # transformations - diff will help with trend
@@ -99,11 +75,11 @@ autoplot(fcd_holt2, series = "Holt's method on differenced data") +
 fit_cases <- auto.arima(casesUS)
 fit_cases # ARIMA(0, 1, 0), RANDOM WALK, AIC - 1949.81, BIC - 1952.48
 fit_cases2 <- auto.arima(casesUS, stepwise = FALSE, approximation = FALSE)
-fit_cases2 # ARIMA(3, 1, 0), AIC - 1941.16, BIC - 1951.85
+fit_cases2 # ARIMA(3, 1, 0), AIC - 1941.16, BIC - 1951.85, log likelihood = -966.58
 autoplot(fit_cases2)
 sarima.for(cases_train, n.ahead = 20, 3, 1, 0)
 lines(cases_test)
-checkresiduals(fit_cases2)
+checkresiduals(fit_cases2) # too low
 
 # Compare accuracy of CASES models
 accuracy(fcd_ses2)
@@ -140,7 +116,7 @@ fit_deaths2 # ARIMA(3, 1, 2), same as above
 autoplot(fit_deaths2)
 sarima.for(deaths_train, n.ahead = 20, 3, 1, 0)
 lines(deaths_test)
-checkresiduals(fit_deaths2)
+checkresiduals(fit_deaths2) # p-value above 0.05, so residuals are not sig
 
 # Compare accuracy of DEATHS models
 accuracy(fcd2_ses2)
@@ -151,7 +127,7 @@ accuracy(fit_deaths2) # most accurate plus best AIC/BIC
 # Regression with ARIMA errors in R
 cases_errors <- auto.arima(casesUS, xreg = deathsUS, stepwise = FALSE, approximation = FALSE)
 cases_errors # ARIMA(0, 1, 5) AIC - 1936.95, BIC - 1955.66
-checkresiduals(cases_errors)
+checkresiduals(cases_errors) # p-value too low, still some trend in the residuals
 fc_errors <- forecast(cases_errors, xreg = rep(mean(deathsUS)), 20)
 autoplot(fc_errors)
 # compare to most accurate CASES model
@@ -159,7 +135,7 @@ accuracy(fc_errors) # better model
 accuracy(fit_cases2)
 deaths_errors <- auto.arima(deathsUS, xreg = casesUS, stepwise = FALSE, approximation = FALSE)
 deaths_errors # ARIMA(0, 0, 5) AIC - 1585.72, BIC - 1604.49
-checkresiduals(deaths_errors)
+checkresiduals(deaths_errors) # too low
 fc2_errors <- forecast(deaths_errors, xreg = rep(mean(casesUS), 20))
 autoplot(fc2_errors)
 # compare to most accurate DEATHS model

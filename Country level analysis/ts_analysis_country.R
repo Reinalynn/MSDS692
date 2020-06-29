@@ -1,21 +1,5 @@
-# https://www.otexts.org/fpp2
-# DataCamp course on ARIMA with R
-# use work flow @ https://datascienceplus.com/time-series-analysis-using-arima-model-in-r/
-
-getwd()
-setwd('/Users/reginaduval/Grad_Work/MSDS692_Practicum1/Project/Data')
-
-# load time series data
-library(forecast)
-library(fpp2)
-library(tidyverse)
-library(readxl) 
-
-# after creating train file, reload it and use to complete next steps
-train <- read.csv("train2.csv", header = TRUE, stringsAsFactors = FALSE)
-
 # filter to US totals only (remove state)
-train_US <- train %>% filter(Country_Region == "US") %>% filter(Province_State == "")
+train_US <- kaggle %>% filter(Country_Region == "US") %>% filter(Province_State == "")
 head(train_US)
 tail(train_US)
 # convert dataset to time series and plot
@@ -23,29 +7,29 @@ tsUS <- ts(train_US[, 6:7], start = c(2020, 23), frequency = 365)
 str(tsUS)
 autoplot(tsUS)
 # repeat for China
-train_China <- train %>% filter(Country_Region == "China") %>% filter(Province_State == "")
+train_China <- kaggle %>% filter(Country_Region == "China") %>% filter(Province_State == "")
 tail(train_China)
 tsChina <- ts(train_China[, 6:7], start = c(2020, 23), frequency = 365)
 autoplot(tsChina)
 # repeat for Turkey
-train_Turkey <- train %>% filter(Country_Region == "Turkey")
+train_Turkey <- kaggle %>% filter(Country_Region == "Turkey")
 head(train_Turkey)
 str(train_Turkey)
 tsTurkey <- ts(train_Turkey[, 6:7], start = c(2020, 23), frequency = 365)
 str(tsTurkey)
 autoplot(tsTurkey)
 # repeat for United Kingdom
-train_UK <- train %>% filter(Country_Region == "United Kingdom") %>% filter(Province_State == "")
+train_UK <- kaggle %>% filter(Country_Region == "United Kingdom") %>% filter(Province_State == "")
 tail(train_UK)
 tsUK <- ts(train_UK[, 6:7], start = c(2020, 23), frequency = 365)
 autoplot(tsUK)
 # repeat for India
-train_India <- train %>% filter(Country_Region == "India") %>% filter(Province_State == "")
+train_India <- kaggle %>% filter(Country_Region == "India") %>% filter(Province_State == "")
 tail(train_India)
 tsIndia <- ts(train_India[, 6:7], start = c(2020, 23), frequency = 365)
 autoplot(tsIndia)
 # repeat for Brazil
-train_Brazil <- train %>% filter(Country_Region == "Brazil") %>% filter(Province_State == "")
+train_Brazil <- kaggle %>% filter(Country_Region == "Brazil") %>% filter(Province_State == "")
 tail(train_Brazil)
 tsBrazil <- ts(train_Brazil[, 6:7], start = c(2020, 23), frequency = 365)
 autoplot(tsBrazil)

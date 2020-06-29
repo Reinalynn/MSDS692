@@ -84,25 +84,21 @@ fcd_10_Dakota$pred
 # Hennepin
 # CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
 autoplot(tsHennepinMN)
-Hennepin_cases <- tsHennepinMN[, "Cases"]
-Hennepin_cases_train <- Hennepin_cases %>% window(end = c(2020, 120))
-Hennepin_cases_test <- Hennepin_cases %>% window(end = c(2020, 130))
-Hennepin_deaths <- tsHennepinMN[, "Deaths"]
-Hennepin_deaths_train <- Hennepin_deaths %>% window(end = c(2020, 120))
-Hennepin_deaths_test <- Hennepin_deaths %>% window(end = c(2020, 130))
+Hennepin_train <- tsHennepinMN %>% window(end = c(2020, 120))
+Hennepin_test <- tsHennepinMN %>% window(start = c(2020, 121), end = c(2020, 130))
 # BEST MODELS - use auto.arima models for simplicity and consistency
-fit_Hennepin_cases <- auto.arima(Hennepin_cases, stepwise = FALSE, approximation = FALSE)
-fit_Hennepin_cases # ARIMA(0, 1, 5), AICc - 965.59
+fit_Hennepin_cases <- auto.arima(Hennepin_train[, "Cases"], stepwise = FALSE, approximation = FALSE)
+fit_Hennepin_cases # ARIMA(0, 1, 5), AICc - 841.86
 autoplot(fit_Hennepin_cases)
-sarima.for(Hennepin_cases_train, n.ahead = 20, 0, 1, 5)
-lines(Hennepin_cases_test)
 checkresiduals(fit_Hennepin_cases) # passes
-fit_Hennepin_deaths <- auto.arima(Hennepin_deaths, stepwise = FALSE, approximation = FALSE)
-fit_Hennepin_deaths # ARIMA(4, 1, 1), AICc - 527.24
+fit_Hennepin_cases <- sarima.for(Hennepin_train[, "Cases"], n.ahead = 20, 0, 1, 5); lines(Hennepin_test[, "Cases"])
+RMSE(fit_Hennepin_cases$pred, MN_test[, "Cases"])/mean(MN_test[, "Cases"]) # 0.87
+fit_Hennepin_deaths <- auto.arima(Hennepin_train[, "Deaths"], stepwise = FALSE, approximation = FALSE)
+fit_Hennepin_deaths # ARIMA(5, 1, 0), AICc - 438.16
 autoplot(fit_Hennepin_deaths)
-sarima.for(Hennepin_deaths_train, n.ahead = 20, 4, 1, 1)
-lines(Hennepin_deaths_test)
 checkresiduals(fit_Hennepin_deaths) # passes
+fit_Hennepin_deaths <- sarima.for(Hennepin_train[, "Deaths"], n.ahead = 10, 5, 1, 0); lines(Hennepin_test[, "Deaths"])
+RMSE(fit_Hennepin_deaths$pred, MN_test[, "Deaths"])/mean(MN_test[, "Deaths"]) # 0.59
 # Use best models to forecast further ahead
 fc_10_Hennepin <- sarima.for(Hennepin_cases, n.ahead = 10, 0, 1, 5)
 fc_10_Hennepin$pred
@@ -112,25 +108,21 @@ fcd_10_Hennepin$pred
 # Kandiyohi
 # CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
 autoplot(tsKandiyohiMN)
-Kandiyohi_cases <- tsKandiyohiMN[, "Cases"]
-Kandiyohi_cases_train <- Kandiyohi_cases %>% window(end = c(2020, 120))
-Kandiyohi_cases_test <- Kandiyohi_cases %>% window(end = c(2020, 130))
-Kandiyohi_deaths <- tsKandiyohiMN[, "Deaths"]
-Kandiyohi_deaths_train <- Kandiyohi_deaths %>% window(end = c(2020, 120))
-Kandiyohi_deaths_test <- Kandiyohi_deaths %>% window(end = c(2020, 130))
+Kandi_train <- tsKandiyohiMN %>% window(end = c(2020, 120))
+Kandi_test <- tsKandiyohiMN %>% window(start = c(2020, 121), end = c(2020, 130))
 # BEST MODELS - use auto.arima models for simplicity and consistency
-fit_Kandiyohi_cases <- auto.arima(Kandiyohi_cases, stepwise = FALSE, approximation = FALSE)
-fit_Kandiyohi_cases # ARIMA(4, 1, 0), AICc - 609
+fit_Kandiyohi_cases <- auto.arima(Kandi_train[, "Cases"], stepwise = FALSE, approximation = FALSE)
+fit_Kandiyohi_cases # ARIMA(3, 1, 2), AICc - 371.47
 autoplot(fit_Kandiyohi_cases)
-sarima.for(Kandiyohi_cases_train, n.ahead = 20, 4, 1, 0)
-lines(Kandiyohi_cases_test)
 checkresiduals(fit_Kandiyohi_cases) # passes
-fit_Kandiyohi_deaths <- auto.arima(Kandiyohi_deaths, stepwise = FALSE, approximation = FALSE)
-fit_Kandiyohi_deaths # ARIMA(0, 0, 0), AICc - 197.14 White Noise Model
-autoplot(fit_Kandiyohi_deaths)
-sarima.for(Kandiyohi_deaths_train, n.ahead = 20, 0, 0, 0)
-lines(Kandiyohi_deaths_test)
+fit_Kandiyohi_cases <- sarima.for(Kandi_train[, "Cases"], n.ahead = 10, 3, 1, 2); lines(Kandi_test[, "Cases"])
+RMSE(fit_Kandiyohi_cases$pred, MN_test[, "Cases"])/mean(MN_test[, "Cases"]) # 0.98
+fit_Kandiyohi_deaths <- auto.arima(Kandi_train[, "Deaths"], stepwise = FALSE, approximation = FALSE)
+fit_Kandiyohi_deaths # ARIMA(0, 0, 0), AICc - 169.17 White Noise Model
 checkresiduals(fit_Kandiyohi_deaths) # passes
+fit_Kandiyohi_deaths <- sarima.for(Kandi_train[, "Deaths"], n.ahead = 10, 0, 0, 0); lines(Kandi_test[, "Deaths"])
+RMSE(fit_Kandiyohi_deaths$pred, MN_test[, "Cases"])/mean(MN_test[, "Cases"]) # 1.02
+
 # Use best models to forecast further ahead
 fc_10_Kandiyohi <- sarima.for(Kandiyohi_cases, n.ahead = 10, 4, 1, 0)
 fc_10_Kandiyohi$pred
@@ -200,12 +192,18 @@ fcd_10_Ramsey$pred
 # Stearns
 # CREATE TEST/TRAIN SETS FOR CASES AND DEATHS
 autoplot(tsStearnsMN)
-Stearns_cases <- tsStearnsMN[, "Cases"]
-Stearns_cases_train <- Stearns_cases %>% window(end = c(2020, 120))
-Stearns_cases_test <- Stearns_cases %>% window(end = c(2020, 130))
-Stearns_deaths <- tsStearnsMN[, "Deaths"]
-Stearns_deaths_train <- Stearns_deaths %>% window(end = c(2020, 120))
-Stearns_deaths_test <- Stearns_deaths %>% window(end = c(2020, 130))
+Stearns_train <- tsStearnsMN %>% window(end = c(2020, 120))
+Stearns_test <- tsStearnsMN %>% window(start = c(2020, 121), end = c(2020, 130))
+fit_Stearns_cases <- auto.arima(Stearns_train[, "Cases"], stepwise = FALSE, approximation = FALSE)
+fit_Stearns_cases # ARIMA(1, 1, 4), AICc - 543.66
+checkresiduals(fit_Stearns_cases) # passes
+fit_Stearns_cases <- sarima.for(Stearns_train[, "Cases"], n.ahead = 10, 1, 1, 4); lines(Stearns_test[, "Cases"])
+RMSE(fit_Stearns_cases$pred, MN_test[, "Cases"])/mean(MN_test[, "Cases"]) # 0.59
+fit_Stearns_deaths <- auto.arima(Stearns_train[, "Deaths"], stepwise = FALSE, approximation = FALSE)
+fit_Stearns_deaths # ARIMA(0, 0, 0), AICc - Inf White Noise Model
+checkresiduals(fit_Stearns_deaths) # p-value NA
+fit_Stearns_deaths <- sarima.for(Stearns_train[, "Deaths"], n.ahead = 10, 0, 0, 0); lines(Stearns_test[, "Deaths"])
+RMSE(fit_Kandiyohi_deaths$pred, MN_test[, "Cases"])/mean(MN_test[, "Cases"]) # error - White Noise Model
 # BEST MODELS - use auto.arima models for simplicity and consistency
 fit_Stearns_cases <- auto.arima(Stearns_cases, stepwise = FALSE, approximation = FALSE)
 fit_Stearns_cases # ARIMA(0, 1, 4), AICc - 887.11

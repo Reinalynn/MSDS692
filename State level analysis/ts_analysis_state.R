@@ -1,24 +1,5 @@
-
-getwd()
-setwd('/Users/reginaduval/Grad_Work/MSDS692_Practicum1/Project/Data')
-
-# load time series data
-library(astsa)
-library(forecast)
-library(fpp2)
-library(MARSS)
-library(MTS)
-library(quantmod)
-library(readxl)
-library(tidyverse)
-library(tseries)
-library(urca)
-library(vars)
-
-train <- read.csv("train2.csv", header = TRUE, stringsAsFactors = FALSE)
-head(train)
 # filter to US states only (remove county)
-train_states <- train %>% filter(Country_Region == "US") %>% filter(County == "")
+train_states <- kaggle %>% filter(Country_Region == "US") %>% filter(County == "")
 head(train_states)
 tail(train_states)
 # filter to MN
@@ -61,45 +42,29 @@ tsTX <- ts(train_TX[, 6:7], start = c(2020, 23), frequency = 365)
 autoplot(tsTX, main = "COVID-19 Cases and Deaths - Texas")
 
 # CREATE TEST/TRAIN SETS FOR CASES AND DEATHS, DIFFERENCED DATA SETS
-casesMN <- tsMN[, "Cases"]
-casesMN_train <- casesMN %>% window(end = c(2020, 120))
-casesMN_test <- casesMN %>% window(end = c(2020, 130))
-diff_casesMN <- diff(casesMN)
-deathsMN <- tsMN[, "Deaths"]
-deathsMN_train <- deathsMN %>% window(end = c(2020, 120))
-deathsMN_test <- deathsMN %>% window(end = c(2020, 130))
-diff_deathsMN <- diff(deathsMN)
+MN_train <- tsMN %>% window(end = c(2020, 120))
+MN_test <- tsMN %>% window(start = c(2020, 121), end = c(2020, 130))
 
-auto.arima(tsMN, stepwise, approximation = FALSE)
 # BEST MODELS - use auto.arima models for simplicity and consistency
-fit_casesMN <- auto.arima(casesMN, stepwise = FALSE, approximation = FALSE)
+fit_casesMN <- auto.arima(tsMN[, "Cases"], stepwise = FALSE, approximation = FALSE)
 fit_casesMN # ARIMA(4, 2, 1), AICc - 1105.85
 autoplot(fit_casesMN)
-sarima.for(casesMN_train, n.ahead = 20, 4, 2, 1)
-lines(casesMN_test)
+sarima.for(MN_train[, "Cases"], n.ahead = 10, 4, 2, 1); lines(tsMN[, "Cases"])
 checkresiduals(fit_casesMN) # p-value too low
-fit_casesMN2 <- arima(casesMN, order = c(6, 2, 1))
-checkresiduals(fit_casesMN2) # passes Ljung-Box test
+fit_casesMN2 <- sarima.for(MN_train[, "Cases"], n.ahead = 10, 4, 2, 2); lines(tsMN[, "Cases"])
+checkresiduals(fit_casesMN2) # passes Ljung-Box test, residuals are not sig
 coeftest(fit_casesMN2)
-fit_deathsMN <- auto.arima(deathsMN, stepwise = FALSE, approximation = FALSE)
-fit_deathsMN # ARIMA(1, 1, 2), AICc - 577.18
+RMSE(fit_casesMN2$pred, MN_test[, "Cases"])/mean(MN_test[, "Cases"]) # 0.19 low = accurate model
+fit_deathsMN <- auto.arima(MN_train[, "Deaths"], stepwise = FALSE, approximation = FALSE)
+fit_deathsMN # ARIMA(0, 1, 2), AICc - 498.11
 autoplot(fit_deathsMN)
-sarima.for(deathsMN_train, n.ahead = 20, 1, 1, 2)
-lines(deathsMN_test)
-checkresiduals(fit_deathsMN)
-fit_deathsMN2 <- arima(deathsMN, order = c(4, 1, 2))
-checkresiduals(fit_deathsMN2) # passes Ljung-Box test
-coeftest(fit_deathsMN2)
+checkresiduals(fit_deathsMN) # passes
+fit_deathsMN <- sarima.for(MN_train[, "Deaths"], n.ahead = 10, 0, 1, 2); lines(tsMN[, "Deaths"])
+RMSE(fit_deathsMN2$pred, MN_test[, "Deaths"])/mean(MN_test[, "Deaths"]) # 0.31
 
 # Use best models to forecast further ahead
-fc_10_MN <- sarima.for(casesMN, n.ahead = 10, 6, 2, 1)
+fc_10_MN <- sarima.for(MN_train[, "Cases"], n.ahead = 10, 4, 2, 2)
 fc_10_MN$pred
-fcd_10_MN <- sarima.for(deathsMN, n.ahead = 10, 4, 1, 2) 
+fcd_10_MN <- sarima.for(MN_train[, "Deaths"], n.ahead = 10, 0, 1, 2) 
 fcd_10_MN$pred
-
 # both models are trending up but deaths are climbing steadily while cases show variation
-
-
-# https://datascienceplus.com/time-series-analysis-using-arima-model-in-r/
-# https://www.medrxiv.org/content/10.1101/2020.04.17.20069237v1.full.pdf
-# https://subscription.packtpub.com/book/big_data_and_business_intelligence/9781783552078/1/ch01lvl1sec08/multivariate-time-series-analysis

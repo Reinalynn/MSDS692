@@ -1,29 +1,22 @@
 # Repeat for CO
 # CREATE TEST/TRAIN SETS FOR CASES AND DEATHS, DIFFERENCED DATA SETS
-casesCO <- tsCO[, "Cases"]
-casesCO_train <- casesCO %>% window(end = c(2020, 120))
-casesCO_test <- casesCO %>% window(end = c(2020, 130))
-diff_casesCO <- diff(casesCO)
-deathsCO <- tsCO[, "Deaths"]
-deathsCO_train <- deathsCO %>% window(end = c(2020, 120))
-deathsCO_test <- deathsCO %>% window(end = c(2020, 130))
-diff_deathsCO <- diff(deathsCO)
+CO_train <- tsCO %>% window(end = c(2020, 120))
+CO_test <- tsCO %>% window(start = c(2020, 121), end = c(2020, 130))
+autoplot(tsCO, main = "COVID-19 Cases and Deaths - Colorado")
 
 # BEST MODELS - use auto.arima models for simplicity and consistency
-fit_casesCO <- auto.arima(casesCO, stepwise = FALSE, approximation = FALSE)
-fit_casesCO # ARIMA(4, 1, 1), AICc - 1374.34
+fit_casesCO <- auto.arima(CO_train[, "Cases"], stepwise = FALSE, approximation = FALSE)
+fit_casesCO # ARIMA(4, 1, 1), AICc - 1251.68
 autoplot(fit_casesCO)
-sarima.for(casesCO_train, n.ahead = 20, 4, 1, 1)
-lines(casesCO_test)
 checkresiduals(fit_casesCO) # passes the Ljung Box test
-fit_deathsCO <- auto.arima(deathsCO, stepwise = FALSE, approximation = FALSE)
-fit_deathsCO # ARIMA(2, 1, 2), AICc - 871.11
+fit_casesCO <- sarima.for(CO_train[, "Cases"], n.ahead = 10, 4, 1, 1); lines(CO_test[, "Cases"]); lines(CO_test[, "Cases"])
+RMSE(fit_casesCO$pred, CO_test[, "Cases"])/mean(CO_test[, "Cases"])
+fit_deathsCO <- auto.arima(CO_train[, "Deaths"], stepwise = FALSE, approximation = FALSE)
+fit_deathsCO # ARIMA(2, 1, 3), AICc - 773.04
 autoplot(fit_deathsCO)
-sarima.for(deathsCO_train, n.ahead = 20, 2, 1, 2)
-lines(deathsCO_test)
-checkresiduals(fit_deathsCO) # p-value too low
-fit_deathsCO2 <- arima(deathsCO, order = c(10, 1, 2))
-checkresiduals(fit_deathsCO2) # passes the Ljung Box test
+checkresiduals(fit_deathsCO) # passes
+fit_deathsCO <- sarima.for(CO_train[, "Deaths"], n.ahead = 10, 2, 1, 3); lines(CO_test[, "Deaths"])
+RMSE(fit_deathsCO$pred, CO_test[, "Deaths"])/mean(CO_test[, "Deaths"]) # 0.93 (quite high, not very accurate)
 
 # Use best models to forecast further ahead
 fc_10_CO <- sarima.for(casesCO, n.ahead = 10, 4, 1, 1)

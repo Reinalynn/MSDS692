@@ -10,20 +10,12 @@ head(data)
 data2 <- read.csv("Distance Data/uscities.csv", header = TRUE)
 head(data2)
 
-arrange(data2, -population)
-results <- for (i in unique(data2$state_id)){
-  data2 %>% filter(state_id == i) %>%
-    filter(population == max(population)) %>%
-    return(state_id, county_fips, county_name)
-}
-
-# results
 data3 <- read.csv("Distance Data/sf12010countydistancemiles.csv", header = TRUE)
 tail(data3)
 data3$concatenate <- paste0(data3$county1, data3$county2)
 tail(data3)
 
-data4 <- read.csv("County_dist_urban.csv", header = TRUE)
+data4 <- read.csv("County_dist_maxpop.csv", header = TRUE)
 head(data4)
 data4 <- data4[, 1:6]
 head(data4)
@@ -61,4 +53,4 @@ head(dist2)
 dist2 <- unique(dist2)
 dim(dist2)
 head(dist2)
-write.csv(dist2, "Distance Data/County_data_distance2.csv", row.names = FALSE)
+write.csv(dist2, "Distance Data/County_data.csv", row.names = FALSE)

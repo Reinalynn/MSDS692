@@ -1,0 +1,682 @@
+---
+title: "Forecasting COVID-19 Cases and Deaths Using Time Series Analysis in R"
+author: "Regina Duval, Practicum for MSDS692"
+date: "6/27/2020"
+output: html_document
+---
+
+## Introduction
+***  
+Since January of 2020, coronavirus cases and deaths have been tracked around the world. The COVID-19 global outbreak continues to impact daily life and everyone is wondering when it will end. The purpose of this project is to investigate the efficacy of time series analysis in forecasting cases and deaths at the country, state, and county level. Specifically, I have focused on six countries, seven states within the US, and nine counties within Minnesota, my home state.  
+
+Epidemiologic models are inherently complex because of the high number of variables needed to  predict disease spread. Model accuracy is also dependent on knowledge of the disease, something that is still very limited when it comes to COVID-19. Finally, as of June 25, 2020, there are only 155 days of data to use in this analysis. As with any model, less data means less precise forecasts.  
+
+Recognizing these constraints, my analysis was narrow in scope since it was intended to utilize basic time series models such as ARIMA and Vector Autoregression. I initially planned to include constants at the county level like population, distance from the state population center, and presence of meat-packing plants. As I moved more deeply into the project, it became clear that these constants were difficult to incorporate into time series models with such a short span of data. Instead, I used them to run multiple linear regression in order to guide me in determining which counties might impact the case and death count of other counties regionally. 
+
+## Data Preparation and Exploration
+***  
+### The Data
+I began with a data set made available for the COVID19 Global Forecasting (Week 5) Kaggle competition found [here](https://www.kaggle.com/c/covid19-global-forecasting-week-5). Unfortunately, this data only contained population, cases and deaths through early May (it has since been updated to include data through early June). To expand my data set, I found a site [here](https://usafacts.org/visualizations/coronavirus-covid-19-spread-map/) (USAfacts) that daily updates confirmed cases and deaths for every county in the United States, but it tracks cases cumulatively. In addition to case and death count, I gathered county distance data from the National Bureau of Economic Research [here](https://data.nber.org/data/county-distance-database.html) and the United States Cities Database [here](https://simplemaps.com/data/us-cities). This data, combined with the county population data from my Kaggle data set, allowed me to identify each state's highest populated county and the distance of each other county in the state from that population center. Finally, I scoured the internet for lists of meat-packing plants in the US. Using lists found  [here](https://www.gipsa.usda.gov/psp/regulated/buyingpacker_list.pdf),  [here](https://www.aphis.usda.gov/import_export/downloads/slaughter_list.pdf), and  [here](https://minnesota.agclassroom.org/educator/fft/mapbw30.pdf), I marked key counties with the presence of meat packing plants.  
+
+Ultimately, I used four files to conduct my time series analysis. These files can be found in the data folder of my Github repository at https://github.com/Reinalynn/MSDS692. The kaggle and county_data data sets are in long form while cases0624 and deaths0624 data are in wide form. This will be resolved later when the recent data is used to check the accuracy of my models and predict future cases and deaths for select models.
+
+##### Install libraries and load data
+```{r, message = FALSE, warning = FALSE}
+library(astsa)
+library(broom)
+library(caret)
+library(DAAG)
+library(dplyr)
+library(dynlm)
+library(forecast)
+library(fpp2)
+library(funModeling)
+library(knitr)
+library(MARSS)
+library(MTS)
+library(quantmod)
+library(readr)
+library(reshape)
+library(sf)
+library(tidyverse)
+library(tidycensus)
+library(tmap)
+library(tmaptools)
+library(tseries)
+library(urbnmapr)
+library(urca)
+library(varhandle)
+library(vars)
+
+# load files from github
+kaggle <- read.csv(url("https://raw.githubusercontent.com/Reinalynn/MSDS692/master/Data/kaggle.csv"), header = TRUE, stringsAsFactors = FALSE)
+county_data <- read.csv(url("https://raw.githubusercontent.com/Reinalynn/MSDS692/master/Data/County_data.csv"), header = TRUE, stringsAsFactors = FALSE)
+cases0624 <- read.csv(url("https://raw.githubusercontent.com/Reinalynn/MSDS692/master/Data/cases0624.csv"), header = TRUE, stringsAsFactors = FALSE)
+deaths0624 <- read.csv(url("https://raw.githubusercontent.com/Reinalynn/MSDS692/master/Data/deaths0624.csv"), header = TRUE, stringsAsFactors = FALSE)
+
+kable(head(kaggle))
+#kable(head(county_data))
+#kable(cases0624[1:5, c(1, 2, 3, 4, 5, 159)])
+#kable(deaths0624[1:5, c(1, 2, 3, 4, 5, 159)])
+```
+   
+### EDA
+I wanted to better understand which counties had a high number of cases or deaths, so I first merged my county specific data with the total of cases and deaths by county as of June 24, 2020. All of my data exploration was conducted on US county level data because this was the lowest level data.  
+
+As a note, a meat_plant value of 0 means that no meat plant is present in the county and a value of 1 means there is a meat plant. For dist_cat, a value of 1 = 0 miles from population center, 2 = 0.1 to 25 miles, 3 = 25.1 to 75 miles, 4 = 75.1 to 150 miles, 5 = 150.1 to 300 miles, 6 = greater than 300 miles. 
+
+##### Create EDA data set
+```{r, message = FALSE, warning = FALSE}
+total_cases <- cases0624[, c(1, 159)] # first column is FIPS, last column is cumulative cases as of 0624
+total_deaths <- deaths0624[, c(1, 159)] # repeat for deaths
+total <- merge(total_cases, total_deaths, by = "FIPS") # create new data frame with 3 columns
+colnames(total) <- c("FIPS", "total_cases", "total_deaths") # name columns
+data <- left_join(county_data, total, by = "FIPS") # add total cases and deaths to county data
+summary(data)
+```
+  
+Basic EDA plots show histograms for each numeric variable in the data. There is a clear relationship between cases and deaths, as expected, and counties further from population centers do appear to have fewer cases and deaths. The relationship between population and cases and deaths is not as clear.  
+
+##### EDA plots
+```{r, warning = FALSE, message = FALSE}
+plot_num(data)
+ggplot(data, aes(x = total_cases, y = total_deaths, color = dist_cat, size = Population)) + 
+  geom_point()
+```
+  
+Since my data pertains to geographic locations, I decided to also view my variables using two of the mapping packages in R. First, I used urbnmapr's county level data set to add a geometry column to my data. Then, I used the tmap package to map my spatial data. I found this [tutorial](http://zevross.com/blog/2018/10/02/creating-beautiful-demographic-maps-in-r-with-the-tidycensus-and-tmap-packages/
+) especially helpful when exploring tmap.  
+
+The maps easily displayed where the population center was in each state and where meat plants were located. They also gave a clear picture of total cases across the US, showing concentrations along the coasts, the southwest and the southeast. Most of the red areas appear to be around cities, as expected. The death count follows the same pattern but is much lower nationwide.
+  
+##### Map meat plants, population centers, cases, and deaths for US
+```{r, include = FALSE}
+counties <- get_urbn_map("counties", sf = TRUE)
+counties$FIPS <- as.integer(counties$county_fips)
+spatial_data <- merge(counties, data, by = "FIPS")
+#kable(head(spatial_data))
+```
+```{r, echo = FALSE}
+cuts <- c(0, 25, 75, 150, 300, 1400)
+plants <- spatial_data %>% filter(meat_plant == "1") # add counties w/meat plants
+tm_shape(spatial_data, projections = 2163) +
+  tm_polygons(col = "mi_to_county", breaks = cuts, palette = "-BuPu") +
+  tm_shape(plants, projections = 2163) +
+  tm_polygons(col = "meat_plant", palette = "Oranges") +
+  tm_legend(legend.position = c("left", "center")) +
+  tm_layout(title = "     Dist to State Pop Center w/Meat Plants",
+            title.size = 1.1,
+            title.position = c("center", "top"))
+# COVID maps of US counties
+tm_shape(spatial_data, projections = 2163) +
+  tm_polygons(col = "total_cases", style = "quantile", palette = "OrRd") +
+  tm_legend(legend.position = c("left", "center")) +
+  tm_layout(title = "Total COVID cases by County",
+            title.size = 1.1,
+            title.position = c("center", "top"))
+tm_shape(spatial_data, projections = 2163) +
+  tm_polygons(col = "total_deaths", style = "log10_pretty", palette = "OrRd") +
+  tm_legend(legend.position = c("left", "center")) +
+  tm_layout(title = "Total COVID deaths by County",
+            title.size = 1.1,
+            title.position = c("center", "top"))
+```
+  
+I also mapped the counties of Minnesota in order to view counties with the presence of meat packing plants. As can be seen from the map, these counties do have a higher concentration of COVID cases than their surrounding counties although this variable does not appear to have an impact on COVID deaths in the state.  
+
+##### Map same information for MN counties
+```{r, echo = FALSE}
+# Distance maps of MN counties
+spatial_data_MN <- spatial_data %>% filter(state == "Minnesota")
+MNmap <- tm_shape(spatial_data_MN, projection = 2163) + 
+  tm_polygons(col = "mi_to_county", style = "quantile", palette = "-YlGnBu") + 
+  tm_legend(position = c("right", "center")) +
+  tm_layout(title = "Minnesota Counties,\nDist to Twin Cities",
+            title.size = 1.1,
+            title.position = c("center", "top"))
+# MNmap
+MNmap + tm_shape(plants, projection = 2163) +
+  tm_polygons(col = "meat_plant", palette = "Oranges") # distance map with meat plants
+# COVID maps of MN counties
+MNmapCOVID <- tm_shape(spatial_data_MN, projection = 2163) + 
+  tm_polygons(c("total_cases", "total_deaths"), style = c("quantile", "pretty"), 
+              palette = list("YlGnBu", "YlOrRd")) + 
+  tm_legend(position = c("right", "center")) +
+  tm_layout(title = " MN Counties, COVID Data",
+            title.size = 1.1,
+            title.position = c("center", "top"))
+MNmapCOVID
+```
+  
+## Models and Results
+***  
+### Building the Univariate Models
+Exploratory data analysis seemed to show that constants like population, distance from a population center, or presence of a meat plant might have an impact on COVID cases or deaths. To look at this more closely, I built a multiple linear regression model for the counties in Minnesota. To do this, I had to make some adjustments to my data in order to change the wide form data sets cases0624 and deaths0624 into long form so that each county and each date had its own line. An added benefit of linear regression (rather than time series) is that this type of long form data means I have 9657 observations (87 counties times 111 days of records). In regular time series analysis, I would be restricted to 111 observations.  
+
+The linear models for both cases and deaths were quite poor with relatively low adjusted R-squared values (cases = 0.4367, deaths = 0.4512). I did use k-fold cross validation to attempt to improve the models but there was no appreciable difference. Of course, adding deaths to the cases model both increased its accuracy and made it harder to use it to forecast cases since deaths are impacted by cases, so I settled for the mediocre models that did not include the highly correlated variable (deaths for cases model, cases for deaths model). Ultimately, these models convinced me that my constants were not enough on their own to accurately predict cases or deaths.
+
+##### Multiple Linear Regression for MN data
+```{r, include = FALSE}
+# filter to MN county level data (wide form)
+MN_0624 <- cases0624 %>% filter(State == "MN") %>% filter(FIPS != "0") # remove unallocated cases
+# load in extra variables
+MN_0624_full <- MN_0624 %>% left_join(county_data, by = "FIPS")
+MN_0624_full <- MN_0624_full[, -c(3, 4, 160, 161, 162, 163, 164)] # remove unnecessary columns
+summary(MN_0624_full) # notice which columns contain nothing but 0 values (cols 3:46)
+MN_0624_full <- MN_0624_full[, -(3:46)]
+# explode data so that each date has a row for each column
+cases_data <- gather(MN_0624_full, date, cases, X3.6.20:X6.24.20, factor_key = TRUE)
+# repeat for deaths and add to data
+MN_0624d <- deaths0624 %>% filter(State == "MN") %>% filter(FIPS != "0")
+MN_0624d <- MN_0624d[, -c(2, 3, 4, 160, 161, 162, 163, 164)]
+MN_0624d <- MN_0624d[, -(2:45)]
+death_data <- gather(MN_0624d, date, deaths, X3.6.20:X6.24.20, factor_key = TRUE)
+long_data <- left_join(cases_data, death_data, by = c("FIPS", "date"))
+str(long_data)
+long_data[500:550, ] # view a piece of the data frame
+long_data <- long_data[, -c(1, 3)] # remove FIPS and mi_to_county value
+
+# basic EDA
+plot_num(long_data)
+cor(long_data[, c(2, 3, 4, 6, 7)]) # no obvious correlation between variables, highest cor is cases and deaths
+pairs(long_data[, c(2, 3, 4, 6, 7)])
+```
+```{r, errors = FALSE, warnings = FALSE}
+# predict cases using linear regression
+mod1 <- lm(cases ~ dist_cat + meat_plant + Population + date, data = long_data)
+summary(mod1)$adj.r.squared # mediocre adjusted R-squared (0.4367), all variables are significant except date (recent dates are significant)
+selectedMod <- step(mod1) # no improvement to AIC to exclude any variable
+# predict deaths using linear regression
+mod1d <- lm(deaths ~ dist_cat + meat_plant + Population + date, data = long_data)
+summary(mod1d)$adj.r.squared # slightly higher adj R-squared (0.4512), all variables are significant except date
+```
+### Choosing the Best Univariate Time Series Model
+NOTE: There are many excellent resources online regarding time series analysis in R, but I found the following to be most useful:  
+* [A Little Book of R for Time Series](https://a-little-book-of-r-for-time-series.readthedocs.io/en/latest/src/timeseries.html#)  
+* [Forecasting: Principles and Practice](https://otexts.com/fpp2/)  
+* [DataCamp: Time Series Analysis in R](https://www.datacamp.com/courses/time-series-analysis-in-r)  
+* [This handy flowchart](http://people.duke.edu/~rnau/411flow.gif)  
+
+The bulk of my project focused on time series analysis and forecasting. Beginning with the full US data, I started with univariate time series analysis and focused on finding the best model to predict just one variable (cases or deaths). Using the autocorrelation function, I investigated trend and  seasonality for both US cases and deaths. Neither time series showed seasonality, but that is probably because the time series is still too short. I believe we will see seasonality further down the road. I was able to determine that both cases and deaths need to be differenced at least once to become stationary.  
+
+After building a simple exponential smoothing model and several different holt trend models (differenced, damped, differenced and damped), I used the information criteria (AIC, AICc, BIC) to determine that ARIMA models provided the best fit for the COVID data. Once I made the decision to use the auto.arima function, it was relatively easy to apply the same basic code to multiple countries, states, and counties. Keep in mind that all of these ARIMA models were built using the Kaggle data which only extended to May 9, 2020. I also used the xreg argument for ARIMA models that allows you to add an external regressor (so I could model US cases by referring back to US deaths), but this model actually performed worse than the basic ARIMA model and it was more difficult to use for forecasting.  
+
+The auto.arima function identified the best ARIMA model within certain parameters, but I noticed that in many cases, the residuals of the models were still significant (p value below 0.05). This meant that the model did not completely explain the trend or movement in the data and something was left behind in the residuals. When the checkresiduals call provided a p-value less than 0.05, I manually manipulated the ARIMA p (number of time lags), d (degree of differencing), or q (order of the moving average model) until I could find a better model. In the fit_casesUS model below, the auto.arima function recommended an ARIMA(3, 1, 0) model but I found that ARIMA(6, 1, 1) was much better.
+
+##### ARIMA models for US cases and deaths
+```{r, warnings = FALSE, errors = FALSE, echo = FALSE}
+# filter to US totals only (remove state)
+train_US <- kaggle %>% filter(Country_Region == "US") %>% filter(Province_State == "")
+kable(tail(train_US))
+# convert data set to time series and plot
+tsUS <- ts(train_US[, 6:7], start = c(2020, 23), frequency = 365)
+str(tsUS)
+autoplot(tsUS, main = "COVID-19 Cases and Deaths - United States")
+# create test/train sets
+US_train <- tsUS %>% window(end = c(2020, 120))
+US_test <- tsUS %>% window(start = c(2020, 121), end = c(2020, 130))
+# BEST MODELS - use auto.arima models for simplicity and consistency
+fit_casesUS <- auto.arima(tsUS[, "Cases"], stepwise = FALSE, approximation = FALSE, trace = FALSE)
+fit_casesUS # ARIMA(3, 1, 0), AIC - 1941.16, log likelihood = -966.58
+accuracy(fit_casesUS)
+sarima.for(US_train[, "Cases"], n.ahead = 10, 3, 1, 0); lines(tsUS[, "Cases"]) # model looks good!
+checkresiduals(fit_casesUS) # p-value too low, residuals are still meaningful
+fit_casesUS2 <- arima(US_train[, "Cases"], order = c(6, 1, 1))
+checkresiduals(fit_casesUS2) # still too low, but closest to 0.05
+fit_casesUS2 # ARIMA(6, 1, 1), AIC = 1732.85, log likelihood = -858.42
+accuracy(fit_casesUS2) # more accurate than (3, 1, 0) model
+fit_deathsUS <- auto.arima(US_train[, "Deaths"], stepwise = FALSE, approximation = FALSE)
+fit_deathsUS # ARIMA(3, 1, 2), AIC - 1417.89, log likelihood = -701.95
+accuracy(fit_deathsUS)
+sarima.for(US_train[, "Deaths"], n.ahead = 10, 3, 1, 2); lines(US_test[, "Deaths"])
+checkresiduals(fit_deathsUS) # passes test (residuals are not significant)
+```
+### Using the Optimal Univariate Model to Forecast
+The models above were used to forecast 10 days of cases and deaths for the US. Because these predictions were made for May 10th through May 19th, I was able to use actual data to check the accuracy of the forecasts. Using the RMSE, I was pleased to find that both models were relatively accurate, although the cases model was impressive with an RMSE of 0.10. The deaths model had an RMSE of 0.53, so this model was less accurate. Note that my ARIMA models are only accurate for short stretches of time because each new prediction is heavily influenced by the most recent days' data. In this way, my ARIMA models are not very stable because they must be updated frequently to remain accurate.
+
+##### ARIMA forecasts for US cases and deaths
+```{r, warning = FALSE, error = FALSE}
+# Use best models to forecast further ahead for US cases and deaths
+fc_10_US <- sarima.for(tsUS[, "Cases"], n.ahead = 10, 6, 1, 1)
+fc_10_US$pred
+actual_US <- c(19710, 18618, 21693, 20832, 27368, 25050, 24994, 18937, 21551, 20260) # actual US cases for 5/10 through 5/19
+RMSE(fc_10_US$pred, actual_US)/mean(actual_US) # 0.10 VERY GOOD
+fcd_10_US <- sarima.for(tsUS[, "Deaths"], n.ahead = 10, 3, 1, 2) 
+fcd_10_US$pred
+actual_USd <- c(731, 1156, 1694, 1743, 1779, 1632, 1224, 808, 785, 1574)
+RMSE(fcd_10_US$pred, actual_USd)/mean(actual_USd) # 0.53 - higher than cases but still strong
+# models show cases declining while deaths are steady
+```
+### ARIMA Models for States and Counties
+Using the same basic logic (and code), I created ARIMA models for seven states and 34 counties. These models can be found in my github code, but select states and counties are shown below. The state models are still quite strong but the ARIMA models are weaker at the county level, probably because the case and death counts are lower.
+
+For the models below, CO had a cases RMSE of 0.32 and a deaths RMSE of 0.93. MN had a cases RMSE of 0.19 and a deaths RMSE of 0.31. 
+
+##### ARIMA models for MN and CO
+```{r, warning = FALSE, error = FALSE, echo = FALSE}
+# MN time series, train and test data sets
+train_states <- kaggle %>% filter(Country_Region == "US") %>% filter(County == "")
+train_MN <- train_states %>% filter(Province_State == "Minnesota")
+tsMN <- ts(train_MN[, 6:7], start = c(2020, 23), frequency = 365)
+MN_train <- tsMN %>% window(end = c(2020, 120))
+MN_test <- tsMN %>% window(start = c(2020, 121), end = c(2020, 130))
+# MN ts plot and cases/deaths models
+autoplot(tsMN, main = "COVID-19 Cases and Deaths - Minnesota")
+fit_casesMN <-auto.arima(MN_train[, "Cases"], stepwise = FALSE, approximation = FALSE)
+# checkresiduals(fit_casesMN) # passes
+fit_casesMN2 <- sarima.for(MN_train[, "Cases"], n.ahead = 10, 4, 2, 2); lines(tsMN[, "Cases"])
+# RMSE(fit_casesMN2$pred, MN_test[, "Cases"])/mean(MN_test[, "Cases"]) # 0.19 low = accurate model
+fit_deathsMN <- arima(MN_train[, "Deaths"], order = c(0, 1, 2))
+# checkresiduals(fit_deathsMN) # passes
+fit_deathsMN2 <- sarima.for(MN_train[, "Deaths"], n.ahead = 10, 0, 1, 2); lines(tsMN[, "Deaths"])
+# RMSE(fit_deathsMN2$pred, MN_test[, "Deaths"])/mean(MN_test[, "Deaths"]) # 0.31 
+# CO time series, train and test data sets
+train_CO <- train_states %>% filter(Province_State == "Colorado") %>% filter(County == "")
+tsCO <- ts(train_CO[, 6:7], start = c(2020, 23), frequency = 365)
+CO_train <- tsCO %>% window(end = c(2020, 120))
+CO_test <- tsCO %>% window(start = c(2020, 121), end = c(2020, 130))
+# CO ts plot and cases/deaths models
+autoplot(tsCO, main = "COVID-19 Cases and Deaths - Colorado")
+fit_casesCO <- auto.arima(CO_train[, "Cases"], stepwise = FALSE, approximation = FALSE)
+# checkresiduals(fit_casesCO) # passes the Ljung Box test
+fit_casesCO <- sarima.for(CO_train[, "Cases"], n.ahead = 10, 4, 1, 1); lines(CO_test[, "Cases"])
+# RMSE(fit_casesCO$pred, CO_test[, "Cases"])/mean(CO_test[, "Cases"]) # 0.32
+fit_deathsCO <- auto.arima(CO_train[, "Cases"], stepwise = FALSE, approximation = FALSE)
+# checkresiduals(fit_deathsCO) # passes
+fit_deathsCO <- sarima.for(CO_train[, "Deaths"], n.ahead = 10, 2, 1, 3); lines(CO_test[, "Deaths"])
+# RMSE(fit_deathsCO$pred, CO_test[, "Deaths"])/mean(CO_test[, "Deaths"]) # 0.93 (quite high, not very accurate)
+States <- c("CO", "MN", "TX")
+Cases_RMSE <- c()
+```
+  
+For the model below, Hennepin county had a cases RMSE of 0.87 and a deaths RMSE of 0.59. Kandiyohi county had a cases RMSE of 0.98 and a deaths RMSE of 1.02. Stearns county had a cases RMSE of 0.48 and a deaths RMSE that could not be calculated because deaths are so low in this county that the arima function identified a white noise model.  
+
+##### ARIMA models for 3 Minnesota counties
+```{r, warning = FALSE, error = FALSE, echo = FALSE}
+# Hennepin
+MN_Hennepin <- kaggle %>% filter(Province_State == "Minnesota") %>% filter(County == "Hennepin")
+tsHennepinMN <- ts(MN_Hennepin[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsHennepinMN, main = "COVID-19 Cases and Deaths - Hennepin, MN")
+Hennepin_train <- tsHennepinMN %>% window(end = c(2020, 120))
+Hennepin_test <- tsHennepinMN %>% window(start = c(2020, 121), end = c(2020, 130))
+fit_Hennepin_cases <- auto.arima(Hennepin_train[, "Cases"], stepwise = FALSE, approximation = FALSE)
+fit_Hennepin_cases # ARIMA(0, 1, 5), AICc - 841.86
+# checkresiduals(fit_Hennepin_cases) # passes
+fit_Hennepin_cases <- sarima.for(Hennepin_train[, "Cases"], n.ahead = 20, 0, 1, 5); lines(Hennepin_test[, "Cases"])
+# RMSE(fit_Hennepin_cases$pred, MN_test[, "Cases"])/mean(MN_test[, "Cases"]) # 0.87
+fit_Hennepin_deaths <- auto.arima(Hennepin_train[, "Deaths"], stepwise = FALSE, approximation = FALSE)
+fit_Hennepin_deaths # ARIMA(5, 1, 0), AICc - 438.16
+# checkresiduals(fit_Hennepin_deaths) # passes
+fit_Hennepin_deaths <- sarima.for(Hennepin_train[, "Deaths"], n.ahead = 10, 5, 1, 0); lines(Hennepin_test[, "Deaths"])
+# RMSE(fit_Hennepin_deaths$pred, MN_test[, "Deaths"])/mean(MN_test[, "Deaths"]) # 0.59
+# Kandiyohi
+MN_Kandiyohi <- kaggle %>% filter(Province_State == "Minnesota") %>% filter(County == "Kandiyohi")
+tsKandiyohiMN <- ts(MN_Kandiyohi[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsKandiyohiMN, main = "COVID-19 Cases and Deaths - Kandiyohi, MN")
+Kandi_train <- tsKandiyohiMN %>% window(end = c(2020, 120))
+Kandi_test <- tsKandiyohiMN %>% window(start = c(2020, 121), end = c(2020, 130))
+fit_Kandiyohi_cases <- auto.arima(Kandi_train[, "Cases"], stepwise = FALSE, approximation = FALSE)
+fit_Kandiyohi_cases # ARIMA(3, 1, 2), AICc - 371.47
+# checkresiduals(fit_Kandiyohi_cases) # passes
+fit_Kandiyohi_cases <- sarima.for(Kandi_train[, "Cases"], n.ahead = 10, 3, 1, 2); lines(Kandi_test[, "Cases"])
+# RMSE(fit_Kandiyohi_cases$pred, MN_test[, "Cases"])/mean(MN_test[, "Cases"]) # 0.98
+fit_Kandiyohi_deaths <- auto.arima(Kandi_train[, "Deaths"], stepwise = FALSE, approximation = FALSE)
+fit_Kandiyohi_deaths # ARIMA(0, 0, 0), AICc - 169.17 White Noise Model
+# checkresiduals(fit_Kandiyohi_deaths) # passes
+fit_Kandiyohi_deaths <- sarima.for(Kandi_train[, "Deaths"], n.ahead = 10, 0, 0, 0); lines(Kandi_test[, "Deaths"])
+# RMSE(fit_Kandiyohi_deaths$pred, MN_test[, "Cases"])/mean(MN_test[, "Cases"]) # 1.02
+# Stearns
+MN_Stearns <- kaggle %>% filter(Province_State == "Minnesota") %>% filter(County == "Stearns")
+tsStearnsMN <- ts(MN_Stearns[, 6:7], start = c(2020, 23), frequency = 365)
+autoplot(tsStearnsMN, main = "COVID-19 Cases and Deaths - Stearns, MN")
+Stearns_train <- tsStearnsMN %>% window(end = c(2020, 120))
+Stearns_test <- tsStearnsMN %>% window(start = c(2020, 121), end = c(2020, 130))
+fit_Stearns_cases <- auto.arima(Stearns_train[, "Cases"], stepwise = FALSE, approximation = FALSE)
+fit_Stearns_cases # ARIMA(1, 1, 4), AICc - 543.66
+# checkresiduals(fit_Stearns_cases) # passes
+fit_Stearns_cases <- sarima.for(Stearns_train[, "Cases"], n.ahead = 10, 1, 1, 4); lines(Stearns_test[, "Cases"])
+# RMSE(fit_Stearns_cases$pred, MN_test[, "Cases"])/mean(MN_test[, "Cases"]) # 0.48
+fit_Stearns_deaths <- auto.arima(Stearns_train[, "Deaths"], stepwise = FALSE, approximation = FALSE)
+fit_Stearns_deaths # ARIMA(0, 0, 0), AICc - Inf White Noise Model
+# checkresiduals(fit_Stearns_deaths) # p-value NA
+# fit_Stearns_deaths <- sarima.for(Stearns_train[, "Deaths"], n.ahead = 10, 0, 0, 0); lines(Stearns_test[, "Deaths"])
+# RMSE(fit_Kandiyohi_deaths$pred, MN_test[, "Cases"])/mean(MN_test[, "Cases"]) # error - White Noise Model
+```
+### Building Multivariate Models  
+NOTE: The following provide detailed information regarding Vector Autoregression and Multivariate Time Series Analysis:  
+* [Introduction to Time Series Analysis and Forecasting in R](https://bookdown.org/singh_pratap_tejendra/intro_time_series_r/multivariate-ts-analysis.html)  
+* [CRAN Documentation for vars package](https://cran.r-project.org/web/packages/vars/vars.pdf)  
+* [An Introduction to Vector Autoregression (VAR)](https://www.r-econometrics.com/timeseries/varintro/)  
+
+ARIMA models are useful when considering time series data that is made up of just one variable or unidirectional relationships where the forecast variable is influenced by predictor variables (exogenous variables or external regressors) but not vice versa. But there are many times in real world data when all variables affect each other. For example, COVID deaths might be influenced by the number of COVID cases, but it is unlikely that COVID cases can be predicted by deaths since there is a natural, biological order where cases comes first. COVID cases in one county, however, might very well both impact and be impacted by COVID cases in another county. Vector Autoregression models are used for this very purpose because they treat all variables symmetrically. In VAR models, all variables are treated as endogenous. These models can be very powerful but they are also difficult to interpret, so they are not used as frequently as univariate time series models.  
+
+The first set of VAR models that I built attempted to forecast cases and deaths for seven US states. The model assumed that each state's cases/deaths influenced each other state's cases/deaths. However, I found that my model was most accurate when I limited the number of variables or states. In the following code, I built two VAR models (cases and deaths) for only three states (CO, MN, TX).
+
+Note that the cases model below had relatively high adjusted R-squared values (0.84 to 0.93), but there were some issues with autocorrelation as shown by the Portmanteau Test. The deaths model was just okay with adjusted R-squared values between 0.50 and 0.64 and autocorrelation was still present. The vars package did, however, have some interesting plots that allowed me to view impulse responses (if one state has sudden spikes, how will that impact other states) and forecast error variance decomposition (how much does each state affect each other state). In these models, each of the states is influenced by each of the others although CO cases might be slightly more independent than MN or TX.  
+
+##### VAR model for US states
+```{r, include = FALSE}
+# use recent data from usafacts and limit to cases but include multiple counties
+US_7cases <- read.csv(url("https://raw.githubusercontent.com/Reinalynn/MSDS692/master/Data/US_7cases.csv"), header = TRUE, stringsAsFactors = FALSE)
+US_7deaths <- read.csv(url("https://raw.githubusercontent.com/Reinalynn/MSDS692/master/Data/US_7deaths.csv"), header = TRUE, stringsAsFactors = FALSE)
+US_7casest <- as.data.frame(t(US_7cases))
+colnames(US_7casest) <- c("CO", "MI", "MN", "NE", "PA", "SD", "TX")
+dim(US_7casest)
+# truncate to remove days prior to reporting (first case occurs on row 45)
+US_7cum <- US_7casest[43:145, ]
+str(US_7cum)
+US_7cum <- US_7cum %>% mutate_if(is.factor, as.character)
+US_7cum <- US_7cum %>% mutate_if(is.character, as.integer)
+US_7 <- diffM(US_7cum)
+# use CO, MN, and TX (my hypothesis is that CO is lagging indicator for MN and TX)
+US_3 <- US_7[, c(1, 3, 7)]
+US_3ts <- ts(US_3, start = c(2020, 63), frequency = 365)
+# use recent data from usafacts and limit to deaths but include multiple counties
+str(US_7deaths)
+US_7dcum <- as.data.frame(t(US_7deaths))
+tail(US_7dcum)
+US_7dcum <- US_7dcum[43:145, ]
+colnames(US_7dcum) <- c("CO", "MI", "MN", "NE", "PA", "SD", "TX")
+dim(US_7dcum)
+US_7dcum <- US_7dcum %>% mutate_if(is.factor, as.character)
+US_7dcum <- US_7dcum %>% mutate_if(is.character, as.integer)
+US_7d <- diffM(US_7dcum)
+head(US_7d)
+US_3d <- US_7d[, c(1, 3, 7)]
+US_3dts <- ts(US_3d, start = c(2020, 63), frequency = 365)
+```
+```{r, warning = FALSE, error = FALSE, echo = FALSE}
+autoplot(US_3ts, main = "Time series plot of the US_3 data")
+US_3diff <- diffM(US_3)
+US_3diffts <- ts(US_3diff, start = c(2020, 63, frequency = 365))
+autoplot(US_3diffts, main = "Time series plot of the stationary (differenced) US_3 data")
+# build model
+VARselect(US_3ts, type = "none") # suggested lag = 7
+var.US_3 <- VAR(US_3ts, type = "none", lag.max = 10, ic = "AIC")
+# summary(var.US_3) CO adjusted R squared = 0.84, MN = 0.92, TX = 0.93 (QUITE GOOD)
+# Portmanteau Test (model diagnostics)
+serial.test(var.US_3) # p-value less than 0.05, so some autocorrelation
+# generate impulse response functions to describe response of MN to TX changes
+irf.MN <- irf(var.US_3, n.ahead = 10, impulse = "TX", response = "MN", runs = 500)
+plot(irf.MN, ylab = "MN Cases", main = "Shock from TX Cases") # response that MN cases would have to jolts in TX data
+# forecast error variance decomposition
+US_3.vardec <- fevd(var.US_3, n.ahead = 10)
+plot(US_3.vardec)
+
+# repeat for deaths for MN, CO, TX
+autoplot(US_3dts, main = "Time series plot of the US_3d data")
+US_3ddiff <- diffM(US_3d)
+US_3dts <- ts(US_3ddiff, start = c(2020, 63), frequency = 365)
+autoplot(US_3dts, main = "Time series plot of the stationary (differenced) US_3d data")
+# build model
+VARselect(US_3dts, type = "none") # suggested lag = 10
+var.US_3d <- VAR(US_3dts, type = "none", lag.max = 10)
+# summary(var.US_3d) CO adjusted R squared = 0.51, MN = 0.64, TX = 0.50 (JUST OKAY)
+serial.test(var.US_3d) # p-value too low (but better than cases model)
+# forecast error variance decompositions
+US_3d.vardec <- fevd(var.US_3d, n.ahead = 10)
+plot(US_3d.vardec) # TX is influenced by MN and CO, but others are not influenced by any other state
+```
+  
+### Forecasting with Multivariate Models
+The forecasts for cases and deaths for each of the three identified states (CO, MN, TX) appeared to be relatively accurate with RMSE score between 0.39 and 0.55 for cases and 0.64 and 2.46 for deaths. Obviously, the VAR model predicted cases with more precision than it did deaths. In comparison, the ARIMA models for MN and CO had lower RMSE scores for both cases and deaths. ARIMA is also the simpler model, so it is probably the preferred choice for the state level data. VAR models, on the other hand, may be more effective at predicting longer term or if different combinations of states/counties were investigated. VAR models are also far more insightful when comparing one county to another.
+
+##### VAR forecasts for CO, MN, and TX
+```{r, warning = FALSE, error = FALSE, echo = FALSE}
+# view forecasts using US_3 model
+fcastUS_3 <- predict(var.US_3, n.ahead = 10) # predict through 06.23.20
+plot(fcastUS_3, names = "CO")
+plot(fcastUS_3, names = "MN")
+plot(fcastUS_3, names = "TX")
+fanchart(fcastUS_3)
+# pull out just the CO forecasts
+CO3 <- fcastUS_3$fcst[1]
+CO3 <- CO3$CO[, 1]
+# Invert the differencing (add the last value of the ts data to the forecasts)
+# kable(tail(US_3)) # cases added each day - use this # b/c we differenced this data
+CO3 <- CO3 + 196
+# CO3 # these values seem more realistic
+# check against actual data
+CO_actual = c(112, 169, 133, 241, 229, 286, 162, 188, 168, 188) # actual cases for 6/14 through 6/23
+# RMSE(CO3, CO_actual)/mean(CO_actual) # 0.41 
+# view MN and TX data
+MN3 <- fcastUS_3$fcst[2]
+MN3 <- MN3$MN[, 1]
+MN3 <- MN3 + 377
+# MN3
+MN_actual <- c(303, 222, 188, 415, 373, 365, 434, 455, 306, 244)
+# RMSE(MN3, MN_actual)/mean(MN_actual) # 0.55
+TX3 <- fcastUS_3$fcst[3]
+TX3 <- TX3$TX[, 1]
+TX3 <- TX3 + 2340
+# TX3 # looks good
+TX_actual <- c(1918, 1265, 3815, 3141, 3509, 3471, 4391, 3865, 3279, 5532)
+# RMSE(TX3, TX_actual)/mean(TX_actual) # 0.39
+
+# view forecasts using US_3d model
+fcastUS_3d <- predict(var.US_3d, n.ahead = 10) # predict through 06.23.20
+plot(fcastUS_3d, names = "CO") 
+plot(fcastUS_3d, names = "MN")
+plot(fcastUS_3d, names = "TX")
+fanchart(fcastUS_3d)
+# pull out just the CO forecasts
+CO3d <- fcastUS_3d$fcst[1]
+CO3d <- CO3d$CO[, 1]
+# Invert the differencing (add the last value of the ts data to the forecasts)
+# kable(tail(US_3d)) # cases added each day - use this # b/c we differenced this data
+CO3d <- CO3d + 3
+# CO3d # these values seem more realistic but still volatile
+# compare to actual data
+CO_actual = c(1, 5, 13, 14, 6, 6, 4, 0, 4, 14) # actual deaths for 6/14 through 6/23
+# RMSE(CO3d, CO_actual)/mean(CO_actual) # 2.45 not very accurate
+# model looks much better
+# view MN and TX data
+MN3d <- fcastUS_3d$fcst[2]
+MN3d <- MN3d$MN[, 1]
+MN3d <- MN3d + 9
+# MN3d # looks good
+MN_actual <- c(15, 6, 9, 12, 18, 20, 11, 8, 4, 9)
+# RMSE(MN3d, MN_actual)/mean(MN_actual) # 0.64
+TX3d <- fcastUS_3d$fcst[3]
+TX3d <- TX3d$TX[, 1]
+TX3d <- TX3d + 18
+# TX3d # reasonable
+TX_actual <- c(19, 7, 47, 33, 43, 36, 25, 16, 10, 29)
+# RMSE(TX3d, TX_actual)/mean(TX_actual) # 0.67
+```
+
+## Conclusions
+***  
+Is time series analysis in R an effective method for forecasting COVID cases and deaths? Ultimately, the answer depends on how far out we need to forecast and how accurate the models need to be. Based on my research and experimentation, ARIMA and VAR models can predict cases and deaths with a fair amount of accuracy for short periods of time in the future. They are also more accurate for time series with higher case and death counts, like the United States or state-level data. On the other hand, they are less accurate at the county level, probably because of the lower counts of cases and deaths and the limited number of records. Over time, these models will become more effective.  
+
+But why take my word for it? The following predictions for cases and deaths from 06.25.20 through 07.04.20 were made using ARIMA forecasting. I encourage you to compare these predictions to actual data and decide for yourself!  
+
+NOTE: to calculate your own normalized RMSE, create a vector for the actual cases or deaths data and use the following:
+> RMSE(fit$pred,actual)/mean(actual)
+
+```{r, include = FALSE}
+US_7cases2 <- read.csv(url("https://raw.githubusercontent.com/Reinalynn/MSDS692/master/Data/US_7cases2.csv"), header = TRUE, stringsAsFactors = FALSE)
+US_7deaths2 <- read.csv(url("https://raw.githubusercontent.com/Reinalynn/MSDS692/master/Data/US_7deaths2.csv"), header = TRUE, stringsAsFactors = FALSE)
+US_7cases2t <- as.data.frame(t(US_7cases2))
+colnames(US_7cases2t) <- c("CO", "MI", "MN", "NE", "PA", "SD", "TX")
+dim(US_7cases2t)
+# truncate to remove days prior to reporting (first case occurs on row 45)
+US_7cum2 <- US_7cases2t[43:156, ]
+str(US_7cum2)
+US_7cum2 <- US_7cum2 %>% mutate_if(is.factor, as.character)
+US_7cum2 <- US_7cum2 %>% mutate_if(is.character, as.integer)
+# difference data
+US_72 <- diffM(US_7cum2)
+# create ts
+US_7ts2 <- ts(US_72, start = c(2020, 65), frequency = 365)
+# use recent data from usafacts and limit to deaths but include multiple counties
+str(US_7deaths2)
+US_7dcum2 <- as.data.frame(t(US_7deaths2))
+tail(US_7dcum2)
+# truncate
+US_7dcum2 <- US_7dcum2[43:156, ]
+colnames(US_7dcum2) <- c("CO", "MI", "MN", "NE", "PA", "SD", "TX")
+dim(US_7dcum2)
+US_7dcum2 <- US_7dcum2 %>% mutate_if(is.factor, as.character)
+US_7dcum2 <- US_7dcum2 %>% mutate_if(is.character, as.integer)
+# difference
+US_7d2 <- diffM(US_7dcum2)
+# create ts
+US_7dts2 <- ts(US_7d2, start = c(2020, 65), frequency = 365)
+```
+```{r, warning = FALSE, error = FALSE, echo = FALSE}
+autoplot(US_7ts2, main = "COVID-19 Cases for 7 US states")
+autoplot(US_7dts2, main = "COVID-19 Deaths for 7 US states")
+# BEST MODELS - use auto.arima models for simplicity and consistency
+```
+
+```{r, fig.cap = "CO Cases", echo = FALSE}
+# CO
+#fit_CO <- auto.arima(US_7ts2[, "CO"], stepwise = FALSE, approximation = FALSE)
+#checkresiduals(fit_CO) # too low
+#fit_CO2 <- arima(US_7ts2[, "CO"], order = c(6, 1, 2))
+#checkresiduals(fit_CO2) # passes, use ARIMA(6, 1, 2)
+fit_CO2 <- sarima.for(US_7ts2[, "CO"], n.ahead = 10, 6, 1, 2)
+fit_CO2$pred # cases for CO 06.25 through 07.04
+# to check, create actual vector and use RMSE(fit_CO2$pred, *actual)/mean(*actual)
+```
+```{r, fig.cap = "CO Deaths", echo = FALSE}
+#fit_COd <- auto.arima(US_7dts2[, "CO"], stepwise = FALSE, approximation = FALSE)
+#checkresiduals(fit_COd) # too low
+#fit_CO2d <- arima(US_7dts2[, "CO"], order = c(10, 1, 2))
+#checkresiduals(fit_CO2d) # passes, use ARIMA(10, 1, 2)
+fit_CO2d <- sarima.for(US_7dts2[, "CO"], n.ahead = 10, 10, 1, 2)
+fit_CO2d$pred # deaths for CO 06.25 through 07.04
+```
+
+```{r, fig.cap = "MI Cases", echo = FALSE}
+# MI
+#fit_MI <- auto.arima(US_7ts2[, "MI"], stepwise = FALSE, approximation = FALSE)
+#checkresiduals(fit_MI) # passes, use ARIMA(1,0,1)
+fit_MI <- sarima.for(US_7ts2[, "MI"], n.ahead = 10, 1, 0, 1)
+fit_MI$pred # cases for MI 06.25 through 07.04
+```
+```{r, fig.cap = "MI Deaths", echo = FALSE}
+#fit_MId <- auto.arima(US_7dts2[, "MI"], stepwise = FALSE, approximation = FALSE)
+#checkresiduals(fit_MId) # passes, use ARIMA(0, 1, 4)
+fit_MId <- sarima.for(US_7dts2[, "MI"], n.ahead = 10, 0, 1, 4)
+fit_MId$pred # deaths for MI 06.25 through 07.04
+```
+
+```{r, fig.cap = "MN Cases", echo = FALSE}
+# MN
+#fit_MN <- auto.arima(US_7ts2[, "MN"], stepwise = FALSE, approximation = FALSE)
+#checkresiduals(fit_MN) # good, use ARIMA(3, 1, 2)
+fit_MN <- sarima.for(US_7ts2[, "MN"], n.ahead = 10, 3, 1, 2)
+fit_MN$pred # cases for MN 06.25 through 07.04
+```
+```{r, fig.cap = "MN Deaths", echo = FALSE}
+#fit_MNd <- auto.arima(US_7dts2[, "MN"], stepwise = FALSE, approximation = FALSE)
+#checkresiduals(fit_MNd) # too low
+#fit_MN2d <- arima(US_7dts2[, "MN"], order = c(5, 1, 3))
+#checkresiduals(fit_MN2d) # passes, use ARIMA(5, 1, 3)
+fit_MN2d <- sarima.for(US_7dts2[, "MN"], n.ahead = 10, 3, 1, 3)
+fit_MN2d$pred # deaths for MN 06.25 through 07.04
+```
+
+```{r, fig.cap = "NE Cases", echo = FALSE}
+# NE
+#fit_NE <- auto.arima(US_7ts2[, "NE"], stepwise = FALSE, approximation = FALSE)
+#checkresiduals(fit_NE) # too low
+#fit_NE2 <- arima(US_7ts2[, "NE"], order = c(9, 1, 4))
+#checkresiduals(fit_NE2) # good, use ARIMA(9, 1, 4)
+fit_NE2 <- sarima.for(US_7ts2[, "NE"], n.ahead = 10, 9, 1, 4)
+fit_NE2$pred # cases for NE 06.25 through 07.04
+```
+```{r, fig.cap = "NE Deaths", echo = FALSE}
+#fit_NEd <- auto.arima(US_7dts2[, "NE"], stepwise = FALSE, approximation = FALSE)
+#checkresiduals(fit_NEd) # good, use ARIMA(0, 1, 1)
+fit_NEd <- sarima.for(US_7dts2[, "NE"], n.ahead = 10, 0, 1, 1)
+fit_NEd$pred # deaths for NE 06.25 through 07.04
+```
+
+```{r, fig.cap = "PA Cases", echo = FALSE}
+# PA
+#fit_PA <- auto.arima(US_7ts2[, "PA"], stepwise = FALSE, approximation = FALSE)
+#checkresiduals(fit_PA) # good, use ARIMA(3, 1, 2)
+fit_PA <- sarima.for(US_7ts2[, "PA"], n.ahead = 10, 3, 1, 2)
+fit_PA$pred # cases for PA 06.25 through 07.04
+```
+```{r, fig.cap = "PA Deaths", echo = FALSE}
+#fit_PAd <- auto.arima(US_7dts2[, "PA"], stepwise = FALSE, approximation = FALSE)
+#checkresiduals(fit_PAd) # good, use ARIMA(1, 1, 4)
+fit_PAd <- sarima.for(US_7dts2[, "PA"], n.ahead = 10, 1, 1, 4)
+fit_PAd$pred # deaths for PA 06.25 through 07.04
+```
+
+```{r, fig.cap = "SD Cases", echo = FALSE}
+# SD
+#fit_SD <- auto.arima(US_7ts2[, "SD"], stepwise = FALSE, approximation = FALSE)
+#checkresiduals(fit_SD) # good, use ARIMA(5, 1, 0)
+fit_SD <- sarima.for(US_7ts2[, "SD"], n.ahead = 10, 5, 1, 0)
+fit_SD$pred # cases for SD 06.25 through 07.04
+```
+```{r, fig.cap = "SD Deaths", echo = FALSE}
+#fit_SDd <- auto.arima(US_7dts2[, "SD"], stepwise = FALSE, approximation = FALSE)
+#checkresiduals(fit_SDd) # too low
+#fit_SD2d <- arima(US_7dts2[, "SD"], order = c(6, 1, 3))
+#checkresiduals(fit_SD2d) # good, use ARIMA(6, 1, 3)
+fit_SD2d <- sarima.for(US_7dts2[, "SD"], n.ahead = 10, 6, 1, 3)
+fit_SD2d$pred # deaths for SD 06.25 through 07.04
+```
+
+```{r, fig.cap = "TX Cases", echo = FALSE}
+# TX
+#fit_TX <- auto.arima(US_7ts2[, "TX"], stepwise = FALSE, approximation = FALSE)
+#checkresiduals(fit_TX) # too low
+#fit_TX2 <- arima(US_7ts2[, "TX"], order = c(7, 1, 3))
+#checkresiduals(fit_TX2) # use ARIMA(7, 1, 3)
+fit_TX2 <- sarima.for(US_7ts2[, "TX"], n.ahead = 10, 7, 1, 3)
+fit_TX2$pred # cases for TX 06.25 through 07.04
+```
+```{r, fig.cap = "TX Deaths", echo = FALSE}
+#fit_TXd <- auto.arima(US_7dts2[, "TX"], stepwise = FALSE, approximation = FALSE)
+#checkresiduals(fit_TXd) # too low
+#fit_TX2d <- arima(US_7dts2[, "TX"], order = c(10, 2, 3))
+#checkresiduals(fit_TX2d) # close, use ARIMA(10, 2, 3)
+fit_TX2d <- sarima.for(US_7dts2[, "TX"], n.ahead = 10, 10, 2, 3)
+fit_TX2d$pred # deaths for TX 06.25 through 07.04
+```
+
+## References
+***  
+https://cran.r-project.org/web/packages/tmap/tmap.pdf
+https://cran.r-project.org/web/packages/vars/vars.pdf
+https://data.census.gov/cedsci/table?g=0400000US27.050000&layer=VT_2018_040_00_PY_D1&y=2018&tid=ACSST5Y2018.S1603&t=Language%20Spoken%20at%20Home&vintage=2018&hidePreview=false&cid=S1601_C01_001E
+https://data.nber.org/data/county-distance-database.html
+https://datascienceplus.com/time-series-analysis-using-arima-model-in-r/
+https://earth.esa.int/documents/10174/1573054/Factors_that_have_an_influence_on_time_series.pdf
+https://en.wikipedia.org/wiki/Autoregressive_integrated_moving_average
+https://www.ewg.org/news-and-analysis/2020/05/ewg-map-counties-meatpacking-plants-report-twice-national-average-rate
+http://www.healthdata.org/us-county-profiles
+https://www.itl.nist.gov/div898/handbook/pmc/section4/pmc451.htm
+https://www.kaggle.com/allen-institute-for-ai/CORD-19-research-challenge/tasks?taskId=558
+https://www.kaggle.com/c/covid19-global-forecasting-week-5/data
+https://www.kaggle.com/imdevskp/corona-virus-report
+https://kevinkotze.github.io/ts-7-tut/
+https://machinelearningmastery.com/time-series-forecasting/
+https://www.medrxiv.org/content/10.1101/2020.04.17.20069237v1
+https://www.medrxiv.org/content/10.1101/2020.04.17.20069237v1.full.pdf
+https://orca-mwe.cf.ac.uk/62788/1/'Horses%20for%20Courses'%20in%20demand%20forecasting.pdf
+https://otexts.com/fpp2/
+http://past.rinfinance.com/agenda/2013/talk/RueyTsay.pdf
+http://people.duke.edu/~rnau/411flow.gif
+https://www.r-econometrics.com/timeseries/varintro/
+https://rstudio-pubs-static.s3.amazonaws.com/274358_9fbc895fea2b443aaa60ad1a75c75687.html
+https://simplemaps.com/data/us-cities
+https://www.statista.com/statistics/1103185/cumulative-coronavirus-covid19-cases-number-us-by-day/
+https://www.statmethods.net/advstats/timeseries.html
+https://www.statmethods.net/stats/regression.html
+https://subscription.packtpub.com/book/big_data_and_business_intelligence/9781783552078/1/ch01lvl1sec08/multivariate-time-series-analysis
+https://thefern.org/2020/04/mapping-covid-19-in-meat-and-food-processing-plants/
+https://towardsdatascience.com/top-5-r-resources-on-covid-19-coronavirus-1d4c8df6d85f
+https://www.tutorialspoint.com/r/r_time_series_analysis.htm
+https://usafacts.org/visualizations/coronavirus-covid-19-spread-map/
+https://www.usnews.com/news/healthiest-communities/articles/2020-05-01/cdc-nearly-5-000-meat-plant-workers-infected-by-coronavirus
+https://www.wired.com/story/why-meatpacking-plants-have-become-covid-19-hot-spots/
+http://zevross.com/blog/2018/10/02/creating-beautiful-demographic-maps-in-r-with-the-tidycensus-and-tmap-packages/
